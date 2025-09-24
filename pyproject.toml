@@ -1,0 +1,22 @@
+[project]
+name = "calendar-merge"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pyfangs",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 🔑 Tell Hatch to include your single module
+[tool.hatch.build.targets.wheel]
+include = ["src/merge.py"]
+
+[tool.uv.sources]
+pyfangs = { git = "https://github.com/leandrorojas/pyfangs.git", rev = "v0.1.0" }
+
+# Optional: CLI entry point (runs merge:main)
+[project.scripts]
+calendar-merge = "merge:main"
