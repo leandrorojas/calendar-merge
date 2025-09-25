@@ -1,0 +1,5 @@
+calendar_merge:
+  skip_days: 1, 3
+
+icloud:
+  future_events_days: 7
