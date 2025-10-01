@@ -1,4 +1,5 @@
 # imports
+from asyncio import events
 import os
 
 # partial imports
@@ -11,12 +12,24 @@ from enum import Enum
 
 # custom imports
 from pyfangs.yaml import YamlHelper
+from pyfangs.filesystem import FileSystem
 
-YAML_SECTION_APP = "calendar_merge"
+YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
 
 YAML_SECTION_ICLOUD = "icloud"
 YAML_SETTING_FUTURE_EVENTS_DAYS = "future_events_days"
+
+YAML_SECTION_SOURCE_CALENDAR = "source-calendar-{index}"
+YAML_SETTING_CALENDAR_SOURCE = "source"
+YAML_SETTING_CALENDAR_TAG = "tag"
+YAML_SETTING_CALENDAR_TITLE = "title"
+
+ICLOUD_FIELD_START_DATE = "startDate"
+ICLOUD_FIELD_END_DATE = "endDate"
+ICLOUD_FIELD_TITLE = "title"
+
+ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 
 class EventAction(Enum):
     none = 0
@@ -105,15 +118,43 @@ def main():
 
         calendar_events = calendar_service.get_events(from_dt=datetime.today(), to_dt=datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_ICLOUD, YAML_SETTING_FUTURE_EVENTS_DAYS)))
         merge_events:list[MergeEvent] = []
-        skip_days = yaml_helper.get(YAML_SECTION_APP, YAML_SETTING_SKIP_DAYS)
+        skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
 
         for event in calendar_events:
-            start_date = event.get('startDate')
+            start_date = event.get(ICLOUD_FIELD_START_DATE)
             event_start = datetime(start_date[1], start_date[2], start_date[3], start_date[4], start_date[5])
             if str(event_start.weekday()) not in skip_days:
-                merge_events.append(MergeEvent(event.get('title'), event.get('startDate'), event.get('endDate'), EventAction.none))
+                merge_events.append(MergeEvent(event.get(ICLOUD_FIELD_TITLE), event.get(ICLOUD_FIELD_START_DATE), event.get(ICLOUD_FIELD_END_DATE), EventAction.none))
 
-        print(merge_events)
+        source_index = 0
+        end_of_calendars = False
+        fs = FileSystem()
+
+        # loop though each configured calendar in yaml
+        while not end_of_calendars:
+            try:
+                # read it’s config
+                calendar_source = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_SOURCE)
+            # if error end of config
+            except Exception as e:
+                end_of_calendars = True
+                continue
+
+            if not end_of_calendars:
+                source_index += 1
+
+                # continue reading it’s config
+                calendar_tag = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TAG)
+                calendar_title = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TITLE)
+
+                # read the url from the .env
+                calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+
+                # download calendar
+
+                # filter events with config & with icloud events
+
+
 
 if __name__ == "__main__":
     main()
