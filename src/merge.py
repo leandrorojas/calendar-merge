@@ -1,0 +1,160 @@
+# imports
+from asyncio import events
+import os
+
+# partial imports
+from pathlib import Path
+from pyicloud import PyiCloudService
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from enum import Enum
+
+# custom imports
+from pyfangs.yaml import YamlHelper
+from pyfangs.filesystem import FileSystem
+
+YAML_SECTION_GENERAL = "config"
+YAML_SETTING_SKIP_DAYS = "skip_days"
+
+YAML_SECTION_ICLOUD = "icloud"
+YAML_SETTING_FUTURE_EVENTS_DAYS = "future_events_days"
+
+YAML_SECTION_SOURCE_CALENDAR = "source-calendar-{index}"
+YAML_SETTING_CALENDAR_SOURCE = "source"
+YAML_SETTING_CALENDAR_TAG = "tag"
+YAML_SETTING_CALENDAR_TITLE = "title"
+
+ICLOUD_FIELD_START_DATE = "startDate"
+ICLOUD_FIELD_END_DATE = "endDate"
+ICLOUD_FIELD_TITLE = "title"
+
+ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
+
+class EventAction(Enum):
+    none = 0
+    add = 1
+    delete = 2
+
+@dataclass
+class MergeEvent(object):
+    title:str
+    start:datetime
+    end:datetime
+    action:EventAction
+
+def validate_2fa(api: PyiCloudService) -> bool:
+    status:bool = True
+
+    if api.requires_2fa:
+        security_key_names = api.security_key_names
+
+        if security_key_names:
+            print(f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}")
+
+            devices = api.fido2_devices
+
+            print("Available FIDO2 devices:")
+
+            for idx, dev in enumerate(devices, start=1):
+                print(f"{idx}: {dev}")
+
+            choice = click.prompt("Select a FIDO2 device by number", type=click.IntRange(1, len(devices)), default=1,)
+            selected_device = devices[choice - 1]
+
+            print("Please confirm the action using the security key")
+
+            api.confirm_security_key(selected_device)
+
+        else:
+            print("Two-factor authentication required.")
+            code = input("Enter the code you received of one of your approved devices: ")
+            result = api.validate_2fa_code(code)
+            print("Code validation result: %s" % result)
+
+            if not result:
+                print("Failed to verify security code")
+                status = False
+
+        if not api.is_trusted_session:
+            print("Session is not trusted. Requesting trust...")
+            result = api.trust_session()
+            print("Session trust result %s" % result)
+
+            if not result:
+                print("Failed to request trust. You will likely be prompted for confirmation again in the coming weeks")
+
+    elif api.requires_2sa:
+        import click
+        print("Two-step authentication required. Your trusted devices are:")
+
+        devices = api.trusted_devices
+        for i, device in enumerate(devices):
+            print("  %s: %s" % (i, device.get('deviceName', "SMS to %s" % device.get('phoneNumber'))))
+
+        device = click.prompt('Which device would you like to use?', default=0)
+        device = devices[device]
+        if not api.send_verification_code(device):
+            print("Failed to send verification code")
+            status = False
+
+        code = click.prompt('Please enter validation code')
+        if not api.validate_verification_code(device, code):
+            print("Failed to verify verification code")
+            status = False
+
+    return status
+
+def main():
+
+    yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
+
+    load_dotenv()
+
+    icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+
+    if (validate_2fa(icloud_service)):
+        calendar_service = icloud_service.calendar
+
+        calendar_events = calendar_service.get_events(from_dt=datetime.today(), to_dt=datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_ICLOUD, YAML_SETTING_FUTURE_EVENTS_DAYS)))
+        merge_events:list[MergeEvent] = []
+        skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
+
+        for event in calendar_events:
+            start_date = event.get(ICLOUD_FIELD_START_DATE)
+            event_start = datetime(start_date[1], start_date[2], start_date[3], start_date[4], start_date[5])
+            if str(event_start.weekday()) not in skip_days:
+                merge_events.append(MergeEvent(event.get(ICLOUD_FIELD_TITLE), event.get(ICLOUD_FIELD_START_DATE), event.get(ICLOUD_FIELD_END_DATE), EventAction.none))
+
+        source_index = 0
+        end_of_calendars = False
+        fs = FileSystem()
+
+        # loop though each configured calendar in yaml
+        while not end_of_calendars:
+            try:
+                # read it’s config
+                calendar_source = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_SOURCE)
+            # if error end of config
+            except Exception as e:
+                end_of_calendars = True
+                continue
+
+            if not end_of_calendars:
+                source_index += 1
+
+                # continue reading it’s config
+                calendar_tag = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TAG)
+                calendar_title = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TITLE)
+
+                # read the url from the .env
+                calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+
+                # download calendar
+
+                # filter events with config & with icloud events
+
+
+
+if __name__ == "__main__":
+    main()
