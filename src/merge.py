@@ -1,14 +1,14 @@
 # imports
-from asyncio import events
 import os
 
 # partial imports
 from pathlib import Path
 from pyicloud import PyiCloudService
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from enum import Enum
+from icalendar import Calendar
 
 # custom imports
 from pyfangs.yaml import YamlHelper
@@ -28,6 +28,9 @@ YAML_SETTING_CALENDAR_TITLE = "title"
 ICLOUD_FIELD_START_DATE = "startDate"
 ICLOUD_FIELD_END_DATE = "endDate"
 ICLOUD_FIELD_TITLE = "title"
+
+ICS_FIELD_DATE_START = "dtstart"
+ICS_FIELD_DATE_END = "dtend"
 
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 
@@ -107,11 +110,10 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
 def main():
 
-    yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
-
     load_dotenv()
-
+    yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
     icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+    cut_off_date = datetime.now() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
 
     if (validate_2fa(icloud_service)):
         calendar_service = icloud_service.calendar
@@ -123,8 +125,12 @@ def main():
         for event in calendar_events:
             start_date = event.get(ICLOUD_FIELD_START_DATE)
             event_start = datetime(start_date[1], start_date[2], start_date[3], start_date[4], start_date[5])
+            #TODO: verify if the event is beyond the threshold of future days
             if str(event_start.weekday()) not in skip_days:
                 merge_events.append(MergeEvent(event.get(ICLOUD_FIELD_TITLE), event.get(ICLOUD_FIELD_START_DATE), event.get(ICLOUD_FIELD_END_DATE), EventAction.none))
+
+        start_date = None
+        event_start = None
 
         source_index = 0
         end_of_calendars = False
@@ -141,20 +147,36 @@ def main():
                 continue
 
             if not end_of_calendars:
-                source_index += 1
-
                 # continue reading it’s config
                 calendar_tag = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TAG)
                 calendar_title = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TITLE)
-
                 # read the url from the .env
                 calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
 
                 # download calendar
+                timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.ics")
+                fs.download(calendar_url, timestamp_filename)
+
+                # prepare index for next iteration
+                source_index += 1
+
+                #read calendar
+                with open(timestamp_filename, "rb") as ics_file:
+                    ics_calendar = Calendar.from_ical(ics_file.read())
+                
+                source_calendar_events:list[MergeEvent] = []
 
                 # filter events with config & with icloud events
+                for event_item in ics_calendar.walk("VEVENT"):
+                    start_date = event.get(ICLOUD_FIELD_START_DATE)
+                    event_start = datetime(start_date[1], start_date[2], start_date[3], start_date[4], start_date[5])
 
+                    #TODO: verify if the event is beyond the threshold of future days
+                    
+                    if str(event_start.weekday()) not in skip_days:
+                        source_calendar_events.append(MergeEvent(None, event_item.get(ICS_FIELD_DATE_START).dt, event_item.get(ICS_FIELD_DATE_END).dt, None))
 
+                print(source_calendar_events)
 
 if __name__ == "__main__":
     main()
