@@ -13,6 +13,7 @@ from icalendar import Calendar
 # custom imports
 from pyfangs.yaml import YamlHelper
 from pyfangs.filesystem import FileSystem
+from pyfangs.time import convert_to_utc
 
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
@@ -111,10 +112,11 @@ def main():
     load_dotenv()
     yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
     icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+    now = datetime.now()
 
-    today_bod = datetime(datetime.now().year, datetime.now().month , datetime.now().day, 0, 0, 0).astimezone(timezone.utc)
-    cut_off_date = datetime.now() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
-    cut_off_date = datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59).astimezone(timezone.utc)
+    today_bod = convert_to_utc(datetime(now.year, now.month , now.day, 0, 0, 0))
+    cut_off_date = now + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+    cut_off_date = convert_to_utc(datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59))
 
     if (validate_2fa(icloud_service)):
         calendar_service = icloud_service.calendar
@@ -125,12 +127,9 @@ def main():
 
         for event in calendar_events:
             start_datetime = event.get(ICLOUD_FIELD_START_DATE)
-            event_start_datetime = datetime(start_datetime[1], start_datetime[2], start_datetime[3], start_datetime[4], start_datetime[5]).astimezone(timezone.utc)
+            event_start_datetime = convert_to_utc(datetime(start_datetime[1], start_datetime[2], start_datetime[3], start_datetime[4], start_datetime[5]))
             if (str(event_start_datetime.weekday()) not in skip_days and (event_start_datetime >= today_bod and event_start_datetime <= cut_off_date)):
                 merge_events.append(MergeEvent(event.get(ICLOUD_FIELD_TITLE), event.get(ICLOUD_FIELD_START_DATE), event.get(ICLOUD_FIELD_END_DATE), EventAction.none))
-
-        start_datetime = None
-        event_start_datetime = None
 
         source_index = 0
         end_of_calendars = False
@@ -154,7 +153,7 @@ def main():
                 calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
 
                 # download calendar
-                timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.ics")
+                timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
                 fs.download(calendar_url, timestamp_filename)
 
                 # prepare index for next iteration
@@ -176,10 +175,10 @@ def main():
                         start_hour = start_datetime.hour
                         start_minute = start_datetime.minute
 
-                    start_datetime = datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_hour, start_minute).astimezone(timezone.utc)
+                    start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_hour, start_minute))
 
                     if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= today_bod and start_datetime <= cut_off_date)):
-                        source_calendar_events.append(MergeEvent(None, event_item.get(ICS_FIELD_DATE_START).dt, event_item.get(ICS_FIELD_DATE_END).dt, EventAction.none))
+                        source_calendar_events.append(MergeEvent(None, start_datetime, event_item.get(ICS_FIELD_DATE_END).dt, EventAction.none))
 
                 # compare events from source calendar and icloud calendar
                 print(f"processed: {calendar_title} - {calendar_tag} / {calendar_source}")
