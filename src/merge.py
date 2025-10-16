@@ -4,8 +4,10 @@ import os
 # partial imports
 from pathlib import Path
 from pyicloud import PyiCloudService
+from pyicloud.services.calendar import EventObject
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone, date
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
 from icalendar import Calendar
@@ -28,6 +30,7 @@ ICLOUD_FIELD_START_DATE = "startDate"
 ICLOUD_FIELD_END_DATE = "endDate"
 ICLOUD_FIELD_TITLE = "title"
 
+ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
 ICS_FIELD_DATE_END = "dtend"
 
@@ -43,6 +46,7 @@ class MergeEvent(object):
     title:str
     start:datetime
     end:datetime
+    full_event:EventObject
     action:EventAction
 
 def validate_2fa(api: PyiCloudService) -> bool:
@@ -120,16 +124,20 @@ def main():
 
     if (validate_2fa(icloud_service)):
         calendar_service = icloud_service.calendar
+        calendar_guid = calendar_service.get_calendars()[0].get("guid")
 
-        calendar_events = calendar_service.get_events(from_dt=datetime.today(), to_dt=datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS)))
-        merge_events:list[MergeEvent] = []
+        all_icloud_events = calendar_service.get_events(from_dt=datetime.today(), to_dt=datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS)))
+        icloud_events:list[MergeEvent] = []
         skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
 
-        for event in calendar_events:
-            start_datetime = event.get(ICLOUD_FIELD_START_DATE)
-            event_start_datetime = convert_to_utc(datetime(start_datetime[1], start_datetime[2], start_datetime[3], start_datetime[4], start_datetime[5]))
+        for icloud_event in all_icloud_events:
+            start_datetime = icloud_event.get(ICLOUD_FIELD_START_DATE)
+            event_tz = ZoneInfo(icloud_event.get("tz"))
+            event_start_datetime = convert_to_utc(datetime(start_datetime[1], start_datetime[2], start_datetime[3], start_datetime[4], start_datetime[5], tzinfo=event_tz))
             if (str(event_start_datetime.weekday()) not in skip_days and (event_start_datetime >= today_bod and event_start_datetime <= cut_off_date)):
-                merge_events.append(MergeEvent(event.get(ICLOUD_FIELD_TITLE), event.get(ICLOUD_FIELD_START_DATE), event.get(ICLOUD_FIELD_END_DATE), EventAction.none))
+                end_datetime = icloud_event.get(ICLOUD_FIELD_END_DATE)
+                event_end_datetime = convert_to_utc(datetime(end_datetime[1], end_datetime[2], end_datetime[3], end_datetime[4], end_datetime[5], tzinfo=event_tz))
+                icloud_events.append(MergeEvent(icloud_event.get(ICLOUD_FIELD_TITLE), event_start_datetime, event_end_datetime, icloud_event, None))
 
         source_index = 0
         end_of_calendars = False
@@ -166,22 +174,70 @@ def main():
                 source_calendar_events:list[MergeEvent] = []
 
                 # filter events with config
-                for event_item in ics_calendar.walk("VEVENT"):
-                    start_datetime:datetime = event_item.get(ICS_FIELD_DATE_START).dt
-                    if(isinstance(start_datetime, date) == True):
-                        start_hour = 0
-                        start_minute = 0
-                    else:
+                for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
+                    start_datetime:datetime = file_event.get(ICS_FIELD_DATE_START).dt
+                    if(isinstance(start_datetime, datetime) == True):
                         start_hour = start_datetime.hour
                         start_minute = start_datetime.minute
+                    else:
+                        start_hour = 0
+                        start_minute = 0
 
                     start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_hour, start_minute))
 
                     if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= today_bod and start_datetime <= cut_off_date)):
-                        source_calendar_events.append(MergeEvent(None, start_datetime, event_item.get(ICS_FIELD_DATE_END).dt, EventAction.none))
+                        end_datetime:datetime = file_event.get(ICS_FIELD_DATE_END).dt
+                        end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute))
+                        source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
 
                 # compare events from source calendar and icloud calendar
-                print(f"processed: {calendar_title} - {calendar_tag} / {calendar_source}")
+                source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
+
+                filtered_icloud_events = list(filter(lambda e: e.title == source_tag, icloud_events))
+                merge_events:list[MergeEvent] = []
+                event_addtion = False
+
+                # if at least one current event
+                if len(filtered_icloud_events) > 0:
+                    # for each filtered iCloud event
+                    for icloud_event in filtered_icloud_events:
+                        source_filtered_events = list(filter(lambda e: e.start == icloud_event.start and e.end == icloud_event.end, source_calendar_events))
+
+                        # if the event is not in the source calendar, mark it for deletion
+                        if len(source_filtered_events) == 0:
+                            icloud_event.action = EventAction.delete
+                        else:
+                            icloud_event.action = EventAction.none
+
+                        merge_events.append(icloud_event)
+
+                    # for each source event that is still none, mark it for addition
+                    events_to_add = list(filter(lambda e: e.action == None, source_calendar_events))
+                    event_addtion = len(events_to_add) > 0
+
+                else: # if no current events, all source events are new
+                    event_addtion = True
+                    events_to_add = source_calendar_events
+
+                if (event_addtion == True):
+                    for source_event in events_to_add:
+                        source_event.title = source_tag
+                        source_event.action = EventAction.add
+                        merge_events.append(source_event)
+
+                    event_addtion = False
+
+                if len(merge_events) > 0:
+                    merge_events = filter(lambda e: e.action != EventAction.none, merge_events)
+                    for merge_event in merge_events:
+                        result = None
+                        if merge_event.action == EventAction.add:
+                            result = calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start, end_date=merge_event.end, tz="UTC"))
+                        elif merge_event.action == EventAction.delete:
+                            remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
+                            result = calendar_service.remove_event(remove_event)
+
+                        print(result)
 
 if __name__ == "__main__":
     main()

@@ -18,7 +18,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "icalendar", specifier = ">=6.3.1" },
     { name = "pyfangs", git = "https://github.com/leandrorojas/pyfangs.git?rev=v0.3.0" },
-    { name = "pyicloud", specifier = ">=2.0.3" },
+    { name = "pyicloud", specifier = "==2.1.0" },
 ]
 
 [[package]]
@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "pyicloud"
-version = "2.0.3"
+version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -400,9 +400,9 @@ dependencies = [
     { name = "srp" },
     { name = "tzlocal" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/02/7f56165e20c08f9ccc7dd259adc8a10f710a367b86706921baea38b04e6f/pyicloud-2.0.3.tar.gz", hash = "sha256:2c3b7a0ff2733f0e9d82f1d8455cb27fea004bab6d0a5cd4cda28968a23009f1", size = 109502, upload-time = "2025-09-04T19:56:48.757Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/67/46/85c03f168dee9b47b71f0463935395d7261fed2d0b5aa2b57f0cb8404a94/pyicloud-2.1.0.tar.gz", hash = "sha256:64fc203dac179fc770c4297ea988dea7d15fd17e7b4759e67797ecce47b6a396", size = 121534, upload-time = "2025-09-26T13:37:07.815Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/fe/01de10085f342bf639a387dfaaf584cd3b6a91d502239bbce36328b2322c/pyicloud-2.0.3-py3-none-any.whl", hash = "sha256:a9fc977b1f55c7e867b87bdd434b66480d176f42e7d4330e2a012dcb27b769da", size = 56582, upload-time = "2025-09-04T19:56:47.364Z" },
+    { url = "https://files.pythonhosted.org/packages/93/7f/a118a5e6c13ab3ab9f6bfc2bcb7518b12f9231c658ef1171065c09ea5f73/pyicloud-2.1.0-py3-none-any.whl", hash = "sha256:1fe9b91d4cdaaf337afd03e9094e54ad459bae192f9e0f979f906386130db6a3", size = 61628, upload-time = "2025-09-26T13:37:06.347Z" },
 ]
 
 [[package]]
