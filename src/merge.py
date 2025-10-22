@@ -15,7 +15,7 @@ from icalendar import Calendar
 # custom imports
 from pyfangs.yaml import YamlHelper
 from pyfangs.filesystem import FileSystem
-from pyfangs.time import convert_to_utc, get_local_timezone
+from pyfangs.time import convert_to_utc
 
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
@@ -53,7 +53,7 @@ class MergeEvent(object):
     full_event:EventObject
     action:EventAction
 
-def validate_2fa(api: PyiCloudService) -> bool:
+def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
     status:bool = True
 
     if api.requires_2fa:
@@ -118,33 +118,68 @@ def validate_2fa(api: PyiCloudService) -> bool:
 def get_datetime(dt:datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items:list, value:str):
-    return items.get(value)
+def get_from_list(items:list, value:str): #TODO: verify each call and validate if returned value is None
+    try:
+        return_value = items.get(value)
+    except:
+        return_value = None
+
+    return return_value
 
 def build_datetime(dt, tz) -> datetime:
     return datetime(dt[1], dt[2], dt[3], dt[4], dt[5], tzinfo=tz)
 
 def main():
     load_dotenv()
-    yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
-    icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+    fs = FileSystem()
+    
+    try:
+        yaml_helper = YamlHelper(fs.join_paths(str(Path(__file__).resolve().parent.parent), "config.yaml"))
+    except:
+        pass
+
+    try:
+        icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+    except:
+        pass
+
     now = datetime.now()
 
     # filter dates can be passed in local tz
     today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
-    cut_off_date = now + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+    try:
+        cut_off_date = now + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+    except:
+        pass
+
     cut_off_date = datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59)
 
     if (validate_2fa(icloud_service)):
         calendar_service = icloud_service.calendar
-        calendar_guid = calendar_service.get_calendars()[0].get("guid")
+
+        try:
+            calendar_guid = calendar_service.get_calendars()[0].get("guid")
+        except:
+            pass
 
         filter_start = datetime.today()
-        filter_end = datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
 
-        all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
+        try:
+            filter_end = datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+        except:
+            pass
+
+        try:
+            all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
+        except:
+            pass
+
         icloud_events:list[MergeEvent] = []
-        skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
+
+        try:
+            skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
+        except:
+            pass
 
         for icloud_event in all_icloud_events:
             all_day:bool = get_from_list(icloud_event, ICLOUD_FIELD_ALL_DAY_EVENT)
@@ -161,7 +196,6 @@ def main():
 
         source_index = 0
         end_of_calendars = False
-        fs = FileSystem()
 
         # loop though each configured calendar in yaml
         while not end_of_calendars:
@@ -176,22 +210,43 @@ def main():
             if not end_of_calendars:
                 calendar_section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
                 # continue reading it’s config
-                calendar_tag = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TAG)
-                calendar_title = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TITLE)
-                calendar_tz = ZoneInfo(yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TZ))
-                # read the url from the .env
-                calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+                try:
+                    calendar_tag = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TAG)
+                except:
+                    pass
+
+                try:
+                    calendar_title = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TITLE)
+                except:
+                    pass
+
+                try:
+                    calendar_tz = ZoneInfo(yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TZ))
+                except:
+                    pass
+
+                try:
+                    # read the url from the .env
+                    calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+                except:
+                    pass
 
                 # download calendar
                 timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
-                fs.download(calendar_url, timestamp_filename)
+                try:
+                    fs.download(calendar_url, timestamp_filename)
+                except:
+                    pass
 
                 # prepare index for next iteration
                 source_index += 1
 
                 #read calendar
-                with open(timestamp_filename, "rb") as ics_file:
-                    ics_calendar = Calendar.from_ical(ics_file.read())
+                try:
+                    with open(timestamp_filename, "rb") as ics_file:
+                        ics_calendar = Calendar.from_ical(ics_file.read())
+                except:
+                    pass
                 
                 source_calendar_events:list[MergeEvent] = []
                 utc_today_bod = convert_to_utc(today_bod)
@@ -262,10 +317,15 @@ def main():
                     merge_events = filter(lambda e: e.action != EventAction.none, merge_events)
                     for merge_event in merge_events:
                         if merge_event.action == EventAction.add:
-                            calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
+                            try:
+                                calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
+                            except:
+                                pass
                         elif merge_event.action == EventAction.delete:
                             remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
-                            calendar_service.remove_event(remove_event)
-
+                            try:
+                                calendar_service.remove_event(remove_event)
+                            except:
+                                pass
 if __name__ == "__main__":
     main()
