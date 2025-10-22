@@ -9,13 +9,16 @@ source-calendar-0:
   source: ""
   tag : ""
   title: ""
+  tz: ""
 
 source-calendar-1:
   source: ""
   tag: ""
   title: ""
+  tz: ""
 
   source-calendar-N:
   source: ""
   tag: ""
   title: ""
+  tz: ""

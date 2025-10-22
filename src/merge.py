@@ -6,7 +6,7 @@ from pathlib import Path
 from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
 from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
@@ -15,7 +15,7 @@ from icalendar import Calendar
 # custom imports
 from pyfangs.yaml import YamlHelper
 from pyfangs.filesystem import FileSystem
-from pyfangs.time import convert_to_utc
+from pyfangs.time import convert_to_utc, get_local_timezone
 
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
@@ -25,10 +25,13 @@ YAML_SECTION_SOURCE_CALENDAR = "source-calendar-{index}"
 YAML_SETTING_CALENDAR_SOURCE = "source"
 YAML_SETTING_CALENDAR_TAG = "tag"
 YAML_SETTING_CALENDAR_TITLE = "title"
+YAML_SETTING_CALENDAR_TZ = "tz"
 
 ICLOUD_FIELD_START_DATE = "startDate"
 ICLOUD_FIELD_END_DATE = "endDate"
 ICLOUD_FIELD_TITLE = "title"
+ICLOUD_FIELD_TZ = "tz"
+ICLOUD_FIELD_ALL_DAY_EVENT = "allDay"
 
 ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
@@ -111,33 +114,49 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
     return status
 
-def main():
+def get_datetime(dt:datetime) -> datetime:
+    return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
+def get_from_list(items:list, value:str):
+    return items.get(value)
+
+def build_datetime(dt, tz) -> datetime:
+    return datetime(dt[1], dt[2], dt[3], dt[4], dt[5], tzinfo=tz)
+
+def main():
     load_dotenv()
     yaml_helper = YamlHelper(Path(__file__).resolve().parent.parent / "config.yaml")
     icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
     now = datetime.now()
 
-    today_bod = convert_to_utc(datetime(now.year, now.month , now.day, 0, 0, 0))
+    # filter dates can be passed in local tz
+    today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
     cut_off_date = now + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
-    cut_off_date = convert_to_utc(datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59))
+    cut_off_date = datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59)
 
     if (validate_2fa(icloud_service)):
         calendar_service = icloud_service.calendar
         calendar_guid = calendar_service.get_calendars()[0].get("guid")
 
-        all_icloud_events = calendar_service.get_events(from_dt=datetime.today(), to_dt=datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS)))
+        filter_start = datetime.today()
+        filter_end = datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+
+        all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
         icloud_events:list[MergeEvent] = []
         skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
 
         for icloud_event in all_icloud_events:
-            start_datetime = icloud_event.get(ICLOUD_FIELD_START_DATE)
-            event_tz = ZoneInfo(icloud_event.get("tz"))
-            event_start_datetime = convert_to_utc(datetime(start_datetime[1], start_datetime[2], start_datetime[3], start_datetime[4], start_datetime[5], tzinfo=event_tz))
-            if (str(event_start_datetime.weekday()) not in skip_days and (event_start_datetime >= today_bod and event_start_datetime <= cut_off_date)):
-                end_datetime = icloud_event.get(ICLOUD_FIELD_END_DATE)
-                event_end_datetime = convert_to_utc(datetime(end_datetime[1], end_datetime[2], end_datetime[3], end_datetime[4], end_datetime[5], tzinfo=event_tz))
-                icloud_events.append(MergeEvent(icloud_event.get(ICLOUD_FIELD_TITLE), event_start_datetime, event_end_datetime, icloud_event, None))
+            all_day:bool = get_from_list(icloud_event, ICLOUD_FIELD_ALL_DAY_EVENT)
+            if (all_day == False):
+                start_datetime = get_from_list(icloud_event, ICLOUD_FIELD_START_DATE)
+                tzinfo = get_from_list(icloud_event, ICLOUD_FIELD_TZ)
+                tzinfo = ZoneInfo(tzinfo)
+                start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
+
+                if str(start_datetime.weekday()) not in skip_days:
+                    end_datetime = get_from_list(icloud_event, ICLOUD_FIELD_END_DATE)
+                    event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
+                    icloud_events.append(MergeEvent(get_from_list(icloud_event, ICLOUD_FIELD_TITLE), start_datetime, event_end_datetime, icloud_event, None))
 
         source_index = 0
         end_of_calendars = False
@@ -154,9 +173,11 @@ def main():
                 continue
 
             if not end_of_calendars:
+                calendar_section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
                 # continue reading it’s config
-                calendar_tag = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TAG)
-                calendar_title = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_TITLE)
+                calendar_tag = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TAG)
+                calendar_title = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TITLE)
+                calendar_tz = ZoneInfo(yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TZ))
                 # read the url from the .env
                 calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
 
@@ -172,23 +193,21 @@ def main():
                     ics_calendar = Calendar.from_ical(ics_file.read())
                 
                 source_calendar_events:list[MergeEvent] = []
+                utc_today_bod = convert_to_utc(today_bod)
+                utc_cut_off_date = convert_to_utc(cut_off_date)
 
                 # filter events with config
                 for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-                    start_datetime:datetime = file_event.get(ICS_FIELD_DATE_START).dt
-                    if(isinstance(start_datetime, datetime) == True):
-                        start_hour = start_datetime.hour
-                        start_minute = start_datetime.minute
-                    else:
-                        start_hour = 0
-                        start_minute = 0
+                    start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
+                    start_datetime:datetime = start_datetime.dt
+                    if (isinstance(start_datetime, datetime) == True):
+                        start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
 
-                    start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_hour, start_minute))
-
-                    if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= today_bod and start_datetime <= cut_off_date)):
-                        end_datetime:datetime = file_event.get(ICS_FIELD_DATE_END).dt
-                        end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute))
-                        source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+                        if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
+                            end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
+                            end_datetime:datetime = end_datetime.dt
+                            end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
+                            source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
 
                 # compare events from source calendar and icloud calendar
                 source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
@@ -203,11 +222,19 @@ def main():
                     for icloud_event in filtered_icloud_events:
                         source_filtered_events = list(filter(lambda e: e.start == icloud_event.start and e.end == icloud_event.end, source_calendar_events))
 
+                        event_action:EventAction = None
                         # if the event is not in the source calendar, mark it for deletion
                         if len(source_filtered_events) == 0:
-                            icloud_event.action = EventAction.delete
+                            event_action = EventAction.delete
+                            # icloud_event.action = EventAction.delete
                         else:
-                            icloud_event.action = EventAction.none
+                            event_action = EventAction.none
+                            # icloud_event.action = EventAction.none
+
+                        icloud_event.action = event_action
+                        
+                        for source_event in source_filtered_events:
+                            source_event.action = event_action
 
                         merge_events.append(icloud_event)
 
@@ -230,14 +257,11 @@ def main():
                 if len(merge_events) > 0:
                     merge_events = filter(lambda e: e.action != EventAction.none, merge_events)
                     for merge_event in merge_events:
-                        result = None
                         if merge_event.action == EventAction.add:
-                            result = calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start, end_date=merge_event.end, tz="UTC"))
+                            calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
                         elif merge_event.action == EventAction.delete:
                             remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
-                            result = calendar_service.remove_event(remove_event)
-
-                        print(result)
+                            calendar_service.remove_event(remove_event)
 
 if __name__ == "__main__":
     main()
