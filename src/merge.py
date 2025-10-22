@@ -36,6 +36,7 @@ ICLOUD_FIELD_ALL_DAY_EVENT = "allDay"
 ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
 ICS_FIELD_DATE_END = "dtend"
+ICS_FIELD_OOO = "TRANSP"
 
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 
@@ -198,16 +199,19 @@ def main():
 
                 # filter events with config
                 for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-                    start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
-                    start_datetime:datetime = start_datetime.dt
-                    if (isinstance(start_datetime, datetime) == True):
-                        start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
+                    ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
 
-                        if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
-                            end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
-                            end_datetime:datetime = end_datetime.dt
-                            end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
-                            source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+                    if (ooo_status is None):
+                        start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
+                        start_datetime:datetime = start_datetime.dt
+                        if (isinstance(start_datetime, datetime) == True):
+                            start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
+
+                            if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
+                                end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
+                                end_datetime:datetime = end_datetime.dt
+                                end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
+                                source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
 
                 # compare events from source calendar and icloud calendar
                 source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
