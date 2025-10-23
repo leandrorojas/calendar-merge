@@ -17,7 +17,7 @@ dependencies = [
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "icalendar", specifier = ">=6.3.1" },
-    { name = "pyfangs", git = "https://github.com/leandrorojas/pyfangs?rev=v0.4.0" },
+    { name = "pyfangs", git = "ssh://github.com/leandrorojas/pyfangs?rev=v0.4.0" },
     { name = "pyicloud", specifier = "==2.1.0" },
 ]
 
