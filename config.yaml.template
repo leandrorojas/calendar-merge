@@ -1,8 +1,5 @@
 config:
   skip_days: 0, 6
-    future_events_days: 5
-
-icloud:
   future_events_days: 5
 
 source-calendar-0:
