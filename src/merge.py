@@ -84,7 +84,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         else:
             print("Two-factor authentication required.")
-            result = api.validate_2fa_code(input("Enter the code you received of one of your approved devices: "))
+            result = api.validate_2fa_code(input("Enter the code you received on one of your approved devices: "))
             print("Code validation result: %s" % result)
 
             if not result:
