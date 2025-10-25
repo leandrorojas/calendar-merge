@@ -18,6 +18,7 @@ from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 import pyfangs.terminal as term
 
+#region CONSTS
 YAML_FILENAME = "config.yaml"
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
@@ -43,6 +44,7 @@ ICS_FIELD_OOO = "TRANSP"
 ENV_ICLOUD_USER = "ICLOUD_USERNAME"
 ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
+#endregion
 
 class EventAction(Enum):
     none = 0
@@ -57,7 +59,7 @@ class MergeEvent(object):
     full_event:EventObject
     action:EventAction
 
-def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
+def validate_2fa(api: PyiCloudService) -> bool:
     status:bool = True
 
     if api.requires_2fa:
@@ -121,7 +123,7 @@ def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
 def get_datetime(dt:datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items:list, value:str): #TODO: verify each call and validate if returned value is None
+def get_from_list(items:list, value:str):
     try:
         return_value = items.get(value)
     except:
