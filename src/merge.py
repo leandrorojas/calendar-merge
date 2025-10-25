@@ -16,7 +16,10 @@ from icalendar import Calendar
 from pyfangs.yaml import YamlHelper
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
+import pyfangs.terminal as term
 
+#region CONSTS
+YAML_FILENAME = "config.yaml"
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
 YAML_SETTING_FUTURE_EVENTS_DAYS = "future_events_days"
@@ -38,7 +41,10 @@ ICS_FIELD_DATE_START = "dtstart"
 ICS_FIELD_DATE_END = "dtend"
 ICS_FIELD_OOO = "TRANSP"
 
+ENV_ICLOUD_USER = "ICLOUD_USERNAME"
+ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
+#endregion
 
 class EventAction(Enum):
     none = 0
@@ -53,7 +59,7 @@ class MergeEvent(object):
     full_event:EventObject
     action:EventAction
 
-def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
+def validate_2fa(api: PyiCloudService) -> bool:
     status:bool = True
 
     if api.requires_2fa:
@@ -78,8 +84,7 @@ def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
 
         else:
             print("Two-factor authentication required.")
-            code = input("Enter the code you received of one of your approved devices: ")
-            result = api.validate_2fa_code(code)
+            result = api.validate_2fa_code(input("Enter the code you received on one of your approved devices: "))
             print("Code validation result: %s" % result)
 
             if not result:
@@ -118,7 +123,7 @@ def validate_2fa(api: PyiCloudService) -> bool: #TODO: add try/except blocks
 def get_datetime(dt:datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items:list, value:str): #TODO: verify each call and validate if returned value is None
+def get_from_list(items:list, value:str):
     try:
         return_value = items.get(value)
     except:
@@ -134,24 +139,24 @@ def main():
     fs = FileSystem()
     
     try:
-        yaml_helper = YamlHelper(fs.join_paths(str(Path(__file__).resolve().parent.parent), "config.yaml"))
+        yaml_helper = YamlHelper(fs.join_paths(str(Path(__file__).resolve().parent.parent), YAML_FILENAME))
     except:
         pass
 
     try:
-        icloud_service = PyiCloudService(os.getenv("ICLOUD_USERNAME"), os.getenv("ICLOUD_PASSWORD"))
+        icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
+    except:
+        pass
+
+    try:
+        future_event_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS)
     except:
         pass
 
     now = datetime.now()
-
     # filter dates can be passed in local tz
     today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
-    try:
-        cut_off_date = now + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
-    except:
-        pass
-
+    cut_off_date = now + timedelta(days=future_event_days)
     cut_off_date = datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59)
 
     if (validate_2fa(icloud_service)):
@@ -165,7 +170,7 @@ def main():
         filter_start = datetime.today()
 
         try:
-            filter_end = datetime.today() + timedelta(days=yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+            filter_end = datetime.today() + timedelta(days=future_event_days)
         except:
             pass
 
@@ -183,16 +188,37 @@ def main():
 
         for icloud_event in all_icloud_events:
             all_day:bool = get_from_list(icloud_event, ICLOUD_FIELD_ALL_DAY_EVENT)
-            if (all_day == False):
-                start_datetime = get_from_list(icloud_event, ICLOUD_FIELD_START_DATE)
-                tzinfo = get_from_list(icloud_event, ICLOUD_FIELD_TZ)
-                tzinfo = ZoneInfo(tzinfo)
-                start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
 
-                if str(start_datetime.weekday()) not in skip_days:
-                    end_datetime = get_from_list(icloud_event, ICLOUD_FIELD_END_DATE)
-                    event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
-                    icloud_events.append(MergeEvent(get_from_list(icloud_event, ICLOUD_FIELD_TITLE), start_datetime, event_end_datetime, icloud_event, None))
+            if all_day is not None:
+                if (all_day == False):
+                    start_datetime = get_from_list(icloud_event, ICLOUD_FIELD_START_DATE)
+
+                    if (start_datetime is not None):
+                        tzinfo = get_from_list(icloud_event, ICLOUD_FIELD_TZ)
+
+                        if tzinfo is not None:
+                            tzinfo = ZoneInfo(tzinfo)
+                            start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
+                            
+                            if str(start_datetime.weekday()) not in skip_days:
+                                end_datetime = get_from_list(icloud_event, ICLOUD_FIELD_END_DATE)
+
+                                if end_datetime is not None:
+                                    event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
+                                    event_title = get_from_list(icloud_event, ICLOUD_FIELD_TITLE)
+
+                                    if event_title is not None:
+                                        icloud_events.append(MergeEvent(event_title, start_datetime, event_end_datetime, icloud_event, None))
+                                    else:
+                                        pass
+                                else:
+                                    pass
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
 
         source_index = 0
         end_of_calendars = False
@@ -254,19 +280,27 @@ def main():
 
                 # filter events with config
                 for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-                    ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
+                    ooo_status = get_from_list(file_event, ICS_FIELD_OOO) # verify if the event is "opaque" wich means "out of office"
 
                     if (ooo_status is None):
                         start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
-                        start_datetime:datetime = start_datetime.dt
-                        if (isinstance(start_datetime, datetime) == True):
-                            start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
 
-                            if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
-                                end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
-                                end_datetime:datetime = end_datetime.dt
-                                end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
-                                source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+                        if start_datetime is not None:
+                            start_datetime:datetime = start_datetime.dt
+                            if (isinstance(start_datetime, datetime) == True):
+                                start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
+
+                                if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
+                                    end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
+
+                                    if end_datetime is not None:
+                                        end_datetime:datetime = end_datetime.dt
+                                        end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
+                                        source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+                                    else:
+                                        pass
+                        else:
+                            pass
 
                 # compare events from source calendar and icloud calendar
                 source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
@@ -327,5 +361,6 @@ def main():
                                 calendar_service.remove_event(remove_event)
                             except:
                                 pass
+
 if __name__ == "__main__":
     main()
