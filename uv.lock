@@ -17,7 +17,7 @@ dependencies = [
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "icalendar", specifier = ">=6.3.1" },
-    { name = "pyfangs", git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.4.1" },
+    { name = "pyfangs", git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.4.3" },
     { name = "pyicloud", specifier = "==2.1.0" },
 ]
 
@@ -385,8 +385,8 @@ wheels = [
 
 [[package]]
 name = "pyfangs"
-version = "0.4.1"
-source = { git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.4.1#ed4f769cd7c8244ec69b423a756ce8a3b89298a4" }
+version = "0.4.3"
+source = { git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.4.3#b1ea3e0d9f6318737fa68994e97cb96393ffa491" }
 dependencies = [
     { name = "pytest" },
     { name = "pyyaml" },

@@ -1,5 +1,6 @@
 # imports
 import os
+import click
 
 # partial imports
 from pathlib import Path
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
 from icalendar import Calendar
+from time import perf_counter
 
 # custom imports
 from pyfangs.yaml import YamlHelper
@@ -44,6 +46,11 @@ ICS_FIELD_OOO = "TRANSP"
 ENV_ICLOUD_USER = "ICLOUD_USERNAME"
 ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
+
+TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
+TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
+TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
+TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
 
 class EventAction(Enum):
@@ -60,62 +67,62 @@ class MergeEvent(object):
     action:EventAction
 
 def validate_2fa(api: PyiCloudService) -> bool:
+    #TODO: the terminal is expecting "done" or "failed" messages. So the first print of each section must consider this
     status:bool = True
 
     if api.requires_2fa:
         security_key_names = api.security_key_names
 
         if security_key_names:
-            print(f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}")
+            print_step(TAG_2F_AUTH, f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}", True)
 
             devices = api.fido2_devices
 
-            print("Available FIDO2 devices:")
+            print_step(TAG_2F_AUTH, "Available FIDO2 devices:", True)
 
             for idx, dev in enumerate(devices, start=1):
-                print(f"{idx}: {dev}")
+                print_step(TAG_2F_AUTH, f"{idx}: {dev}", True)
 
-            choice = click.prompt("Select a FIDO2 device by number", type=click.IntRange(1, len(devices)), default=1,)
+            choice = click.prompt(f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number", type=click.IntRange(1, len(devices)), default=1,)
             selected_device = devices[choice - 1]
 
-            print("Please confirm the action using the security key")
+            print_step(TAG_2F_AUTH, "Please confirm the action using the security key", True)
 
             api.confirm_security_key(selected_device)
 
         else:
-            print("Two-factor authentication required.")
+            print_step(TAG_2F_AUTH, "Two-factor authentication required.", True)
             result = api.validate_2fa_code(input("Enter the code you received on one of your approved devices: "))
-            print("Code validation result: %s" % result)
+            print_step(TAG_2F_AUTH, f"Code validation result: {result}", True)
 
             if not result:
-                print("Failed to verify security code")
+                print_step(TAG_2F_AUTH, "Failed to verify security code", True)
                 status = False
 
         if not api.is_trusted_session:
-            print("Session is not trusted. Requesting trust...")
+            print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", True)
             result = api.trust_session()
-            print("Session trust result %s" % result)
+            print_step(TAG_2F_AUTH, f"Session trust result {result}", True)
 
             if not result:
-                print("Failed to request trust. You will likely be prompted for confirmation again in the coming weeks")
+                print_step(TAG_2F_AUTH, "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks", True)
 
     elif api.requires_2sa:
-        import click
-        print("Two-step authentication required. Your trusted devices are:")
+        print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", True)
 
         devices = api.trusted_devices
         for i, device in enumerate(devices):
-            print("  %s: %s" % (i, device.get('deviceName', "SMS to %s" % device.get('phoneNumber'))))
+            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', 'SMS to %s' % device.get('phoneNumber'))}", True)
 
-        device = click.prompt('Which device would you like to use?', default=0)
+        device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
         device = devices[device]
         if not api.send_verification_code(device):
-            print("Failed to send verification code")
+            print_step(TAG_2F_AUTH, "Failed to send verification code", True)
             status = False
 
-        code = click.prompt('Please enter validation code')
+        code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
         if not api.validate_verification_code(device, code):
-            print("Failed to verify verification code")
+            print_step(TAG_2F_AUTH, "Failed to verify verification code", True)
             status = False
 
     return status
@@ -131,236 +138,268 @@ def get_from_list(items:list, value:str):
 
     return return_value
 
-def build_datetime(dt, tz) -> datetime:
+def build_datetime(dt: tuple | list, tz: ZoneInfo) -> datetime:
+    """Build datetime from sequence [0, year, month, day, hour, minute]."""
     return datetime(dt[1], dt[2], dt[3], dt[4], dt[5], tzinfo=tz)
 
+def get_tag(tag:str) -> str:
+    return f"[{tag}]"
+
+def print_step(tag:str, message:str, one_liner:bool=True):
+    term.print(f"{get_tag(tag)} {message}", one_liner)
+
+def _normalize_skip_days(skip_days) -> list[str]:
+    if isinstance(skip_days, str):
+        skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
+    return [str(day) for day in (skip_days or [])]
+
+def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
+    events:list[MergeEvent] = []
+    for raw_event in raw_events:
+        all_day:bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
+        if all_day is None or all_day:
+            continue
+
+        start_datetime = get_from_list(raw_event, ICLOUD_FIELD_START_DATE)
+        tzinfo = get_from_list(raw_event, ICLOUD_FIELD_TZ)
+        end_datetime = get_from_list(raw_event, ICLOUD_FIELD_END_DATE)
+        event_title = get_from_list(raw_event, ICLOUD_FIELD_TITLE)
+
+        if None in (start_datetime, tzinfo, end_datetime, event_title):
+            continue
+
+        tzinfo = ZoneInfo(tzinfo)
+        start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
+        if str(start_datetime.weekday()) in skip_days:
+            continue
+
+        event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
+        events.append(MergeEvent(event_title, start_datetime, event_end_datetime, raw_event, None))
+
+    return events
+
 def main():
+    #region CONFIG_LOAD
+    print_step(TAG_CALENDAR_MERGE, "reading config...", False)
     load_dotenv()
     fs = FileSystem()
-    
+    config_path = fs.join_paths(str(Path(__file__).resolve().parent.parent), YAML_FILENAME)
     try:
-        yaml_helper = YamlHelper(fs.join_paths(str(Path(__file__).resolve().parent.parent), YAML_FILENAME))
-    except:
-        pass
+        yaml_helper = YamlHelper(config_path)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to open YAML configuration") from err
 
+    try:
+        future_event_days = int(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Invalid future event days configuration") from err
+
+    try:
+        skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to load skip days configuration") from err
+    skip_days = _normalize_skip_days(skip_days)
+    term.print_done()
+    #endregion
+
+    #region ICLOUD_AUTH
+    print_step(TAG_ICLOUD_AUTH, "authenticating to iCloud...", False)
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
-    except:
-        pass
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to start iCloud service") from err
 
     try:
-        future_event_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS)
-    except:
-        pass
+        if not validate_2fa(icloud_service):
+            term.print_failed()
+            raise RuntimeError("2FA validation failed")
+    except RuntimeError:
+        term.print_failed()
+        raise
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("2FA validation error") from err
+    term.print_done()
+    #endregion
+
+    #region ICLOUD_CALENDAR_LOAD
+    print_step(TAG_CALENDAR_MERGE, "loading iCloud calendar events...", False)
+    calendar_service = icloud_service.calendar
+    try:
+        calendars = calendar_service.get_calendars()
+        calendar_guid = next((c.get("guid") for c in calendars if c.get("guid")), None)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to fetch calendars") from err
+
+    if not calendar_guid:
+        term.print_failed()
+        raise RuntimeError("No calendar GUID available")
+
+    filter_start = datetime.today()
+    filter_end = datetime.today() + timedelta(days=future_event_days)
+
+    try:
+        all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to load events from iCloud") from err
+
+    icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
 
     now = datetime.now()
-    # filter dates can be passed in local tz
     today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
-    cut_off_date = now + timedelta(days=future_event_days)
-    cut_off_date = datetime(cut_off_date.year, cut_off_date.month, cut_off_date.day, 23, 59, 59)
+    cut_off_candidate = now + timedelta(days=future_event_days)
+    cut_off_date = datetime(cut_off_candidate.year, cut_off_candidate.month, cut_off_candidate.day, 23, 59, 59)
 
-    if (validate_2fa(icloud_service)):
-        calendar_service = icloud_service.calendar
+    source_index = 0
+    term.print_done()
+    #endregion
 
+    print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value, True)
+    while True:
+        section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
         try:
-            calendar_guid = calendar_service.get_calendars()[0].get("guid")
-        except:
-            pass
+            calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
+        except Exception:
+            print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "no more source calendars to process" + term.TerminalColors.reset.value, True)
+            break
 
-        filter_start = datetime.today()
-
+        print_step(TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", False)
         try:
-            filter_end = datetime.today() + timedelta(days=future_event_days)
-        except:
-            pass
+            calendar_tag = yaml_helper.get(section, YAML_SETTING_CALENDAR_TAG)
+            calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
+            calendar_tz = ZoneInfo(yaml_helper.get(section, YAML_SETTING_CALENDAR_TZ))
+        except Exception as err:
+            term.print_failed()
+            raise RuntimeError(f"Invalid calendar configuration at index {source_index}") from err
 
+        calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+        if not calendar_url:
+            term.print_failed()
+            raise RuntimeError(f"Missing calendar URL for index {source_index}")
+        term.print_done()
+
+        print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", False)
+        timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
         try:
-            all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
-        except:
-            pass
+            fs.download(calendar_url, timestamp_filename)
+        except Exception as err:
+            term.print_failed()
+            raise RuntimeError(f"Unable to download calendar {calendar_source} [{source_index}]") from err
+        term.print_done()
 
-        icloud_events:list[MergeEvent] = []
-
+        print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", False)
         try:
-            skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
-        except:
-            pass
+            with open(timestamp_filename, "rb") as ics_file:
+                ics_calendar = Calendar.from_ical(ics_file.read())
+        except Exception as err:
+            term.print_failed()
+            raise RuntimeError(f"Unable to parse calendar {calendar_source} [{source_index}]") from err
+        
+        source_calendar_events:list[MergeEvent] = []
+        utc_today_bod = convert_to_utc(today_bod)
+        utc_cut_off_date = convert_to_utc(cut_off_date)
+        term.print_done()
 
-        for icloud_event in all_icloud_events:
-            all_day:bool = get_from_list(icloud_event, ICLOUD_FIELD_ALL_DAY_EVENT)
-
-            if all_day is not None:
-                if (all_day == False):
-                    start_datetime = get_from_list(icloud_event, ICLOUD_FIELD_START_DATE)
-
-                    if (start_datetime is not None):
-                        tzinfo = get_from_list(icloud_event, ICLOUD_FIELD_TZ)
-
-                        if tzinfo is not None:
-                            tzinfo = ZoneInfo(tzinfo)
-                            start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
-                            
-                            if str(start_datetime.weekday()) not in skip_days:
-                                end_datetime = get_from_list(icloud_event, ICLOUD_FIELD_END_DATE)
-
-                                if end_datetime is not None:
-                                    event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
-                                    event_title = get_from_list(icloud_event, ICLOUD_FIELD_TITLE)
-
-                                    if event_title is not None:
-                                        icloud_events.append(MergeEvent(event_title, start_datetime, event_end_datetime, icloud_event, None))
-                                    else:
-                                        pass
-                                else:
-                                    pass
-                        else:
-                            pass
-                    else:
-                        pass
-            else:
-                pass
-
-        source_index = 0
-        end_of_calendars = False
-
-        # loop though each configured calendar in yaml
-        while not end_of_calendars:
-            try:
-                # read it’s config
-                calendar_source = yaml_helper.get(YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), YAML_SETTING_CALENDAR_SOURCE)
-            # if error end of config
-            except Exception as e:
-                end_of_calendars = True
+        print_step(TAG_CALENDAR_MERGE, f"filtering events from source calendar {calendar_source} [{source_index}]...", False)
+        for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
+            ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
+            if ooo_status is not None:
                 continue
 
-            if not end_of_calendars:
-                calendar_section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
-                # continue reading it’s config
+            start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
+            if start_datetime is None:
+                continue
+
+            start_datetime = start_datetime.dt
+            if not isinstance(start_datetime, datetime):
+                continue
+
+            start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
+
+            if str(start_datetime.weekday()) in skip_days:
+                continue
+
+            if not (utc_today_bod <= start_datetime <= utc_cut_off_date):
+                continue
+
+            end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
+            if end_datetime is None:
+                continue
+
+            end_datetime = end_datetime.dt
+            end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
+            source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+        term.print_done()
+        
+        source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
+        print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", False)
+        filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
+        merge_events:list[MergeEvent] = []
+        event_addition = False
+        term.print_done()
+
+        print_step(TAG_CALENDAR_MERGE, f"identifying events to remove...", False)
+        if filtered_icloud_events:
+            source_event_map:dict[tuple[datetime, datetime], list[MergeEvent]] = {}
+            for source_event in source_calendar_events:
+                source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
+
+            for icloud_event in filtered_icloud_events:
+                event_time = (icloud_event.start, icloud_event.end)
+                matching_events = source_event_map.get(event_time, [])
+                event_action = EventAction.none if matching_events else EventAction.delete
+                icloud_event.action = event_action
+                for source_event in matching_events:
+                    source_event.action = event_action
+                merge_events.append(icloud_event)
+
+            events_to_add = [event for event in source_calendar_events if event.action is None]
+            event_addition = len(events_to_add) > 0
+        else:
+            event_addition = True
+            events_to_add = source_calendar_events
+        term.print_done()
+
+        if event_addition:
+            print_step(TAG_CALENDAR_MERGE, f"identifying events to add...", False)
+            for source_event in events_to_add:
+                source_event.title = source_tag
+                source_event.action = EventAction.add
+                merge_events.append(source_event)
+            term.print_done()
+
+        print_step(TAG_CALENDAR_MERGE, f"synchronizing events to iCloud calendar...", False)
+        actionable_events = [event for event in merge_events if event.action != EventAction.none]
+        for merge_event in actionable_events:
+            if merge_event.action == EventAction.add:
                 try:
-                    calendar_tag = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TAG)
-                except:
-                    pass
-
+                    calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
+                except Exception as err:
+                    term.print_failed()
+                    raise RuntimeError(f"Unable to add event {merge_event.title}") from err
+            elif merge_event.action == EventAction.delete:
+                remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
                 try:
-                    calendar_title = yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TITLE)
-                except:
-                    pass
+                    calendar_service.remove_event(remove_event)
+                except Exception as err:
+                    term.print_failed()
+                    raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
+        term.print_done()
 
-                try:
-                    calendar_tz = ZoneInfo(yaml_helper.get(calendar_section, YAML_SETTING_CALENDAR_TZ))
-                except:
-                    pass
-
-                try:
-                    # read the url from the .env
-                    calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
-                except:
-                    pass
-
-                # download calendar
-                timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
-                try:
-                    fs.download(calendar_url, timestamp_filename)
-                except:
-                    pass
-
-                # prepare index for next iteration
-                source_index += 1
-
-                #read calendar
-                try:
-                    with open(timestamp_filename, "rb") as ics_file:
-                        ics_calendar = Calendar.from_ical(ics_file.read())
-                except:
-                    pass
-                
-                source_calendar_events:list[MergeEvent] = []
-                utc_today_bod = convert_to_utc(today_bod)
-                utc_cut_off_date = convert_to_utc(cut_off_date)
-
-                # filter events with config
-                for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-                    ooo_status = get_from_list(file_event, ICS_FIELD_OOO) # verify if the event is "opaque" wich means "out of office"
-
-                    if (ooo_status is None):
-                        start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
-
-                        if start_datetime is not None:
-                            start_datetime:datetime = start_datetime.dt
-                            if (isinstance(start_datetime, datetime) == True):
-                                start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
-
-                                if ((str(start_datetime.weekday()) not in skip_days) and (start_datetime >= utc_today_bod and start_datetime <= utc_cut_off_date)):
-                                    end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
-
-                                    if end_datetime is not None:
-                                        end_datetime:datetime = end_datetime.dt
-                                        end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
-                                        source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
-                                    else:
-                                        pass
-                        else:
-                            pass
-
-                # compare events from source calendar and icloud calendar
-                source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
-
-                filtered_icloud_events = list(filter(lambda e: e.title == source_tag, icloud_events))
-                merge_events:list[MergeEvent] = []
-                event_addtion = False
-
-                # if at least one current event
-                if len(filtered_icloud_events) > 0:
-                    # for each filtered iCloud event
-                    for icloud_event in filtered_icloud_events:
-                        source_filtered_events = list(filter(lambda e: e.start == icloud_event.start and e.end == icloud_event.end, source_calendar_events))
-
-                        event_action:EventAction = None
-                        # if the event is not in the source calendar, mark it for deletion
-                        if len(source_filtered_events) == 0:
-                            event_action = EventAction.delete
-                            # icloud_event.action = EventAction.delete
-                        else:
-                            event_action = EventAction.none
-                            # icloud_event.action = EventAction.none
-
-                        icloud_event.action = event_action
-                        
-                        for source_event in source_filtered_events:
-                            source_event.action = event_action
-
-                        merge_events.append(icloud_event)
-
-                    # for each source event that is still none, mark it for addition
-                    events_to_add = list(filter(lambda e: e.action == None, source_calendar_events))
-                    event_addtion = len(events_to_add) > 0
-
-                else: # if no current events, all source events are new
-                    event_addtion = True
-                    events_to_add = source_calendar_events
-
-                if (event_addtion == True):
-                    for source_event in events_to_add:
-                        source_event.title = source_tag
-                        source_event.action = EventAction.add
-                        merge_events.append(source_event)
-
-                    event_addtion = False
-
-                if len(merge_events) > 0:
-                    merge_events = filter(lambda e: e.action != EventAction.none, merge_events)
-                    for merge_event in merge_events:
-                        if merge_event.action == EventAction.add:
-                            try:
-                                calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
-                            except:
-                                pass
-                        elif merge_event.action == EventAction.delete:
-                            remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
-                            try:
-                                calendar_service.remove_event(remove_event)
-                            except:
-                                pass
+        source_index += 1
 
 if __name__ == "__main__":
-    main()
+    merge_start = perf_counter()
+    term.print_header_box("iCloud calendar merger")
+    try:
+        main()
+    except Exception as err:
+        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {err}")
+    merge_end = perf_counter()
+    term.print_header_box("merge & sync completed", f"total time: {merge_end - merge_start:.3f} seconds")
