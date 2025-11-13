@@ -2,3 +2,5 @@ config.yaml
 .env
 __pycache__/
 .vscode/
+
+*.log
