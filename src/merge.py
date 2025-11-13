@@ -1,6 +1,8 @@
 # imports
 import os
 import click
+import argparse
+
 
 # partial imports
 from pathlib import Path
@@ -13,12 +15,15 @@ from dataclasses import dataclass
 from enum import Enum
 from icalendar import Calendar
 from time import perf_counter
+import google.generativeai as genai
 
 # custom imports
 from pyfangs.yaml import YamlHelper
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
+from pyfangs.ai import GeminiAI
 import pyfangs.terminal as term
+import pyfangs.telegram as telegram
 
 #region CONSTS
 YAML_FILENAME = "config.yaml"
@@ -31,6 +36,7 @@ YAML_SETTING_CALENDAR_SOURCE = "source"
 YAML_SETTING_CALENDAR_TAG = "tag"
 YAML_SETTING_CALENDAR_TITLE = "title"
 YAML_SETTING_CALENDAR_TZ = "tz"
+YAML_SETTING_AI_TONE = "ai_tone"
 
 ICLOUD_FIELD_START_DATE = "startDate"
 ICLOUD_FIELD_END_DATE = "endDate"
@@ -46,12 +52,17 @@ ICS_FIELD_OOO = "TRANSP"
 ENV_ICLOUD_USER = "ICLOUD_USERNAME"
 ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
+ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
+ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
+ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
 TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
+
+_TELEGRAM_SERVICE: telegram.TelegramService | None = None
 
 class EventAction(Enum):
     none = 0
@@ -92,6 +103,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", True)
+            send_telegram_message("Calendar merger needs the Apple 2FA code. Please provide or approve the code.")
             result = api.validate_2fa_code(input("Enter the code you received on one of your approved devices: "))
             print_step(TAG_2F_AUTH, f"Code validation result: {result}", True)
 
@@ -120,6 +132,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
             print_step(TAG_2F_AUTH, "Failed to send verification code", True)
             status = False
 
+        send_telegram_message("Calendar merger triggered Apple two-step authentication. Please enter the validation code.")
         code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
         if not api.validate_verification_code(device, code):
             print_step(TAG_2F_AUTH, "Failed to verify verification code", True)
@@ -148,10 +161,79 @@ def get_tag(tag:str) -> str:
 def print_step(tag:str, message:str, one_liner:bool=True):
     term.print(f"{get_tag(tag)} {message}", one_liner)
 
+def create_ai_service(api_key:str | None) -> GeminiAI | None:
+    if not api_key:
+        term.print(f"{get_tag(TAG_ERROR)} Gemini API key not configured", True)
+        return None
+
+    try:
+        return GeminiAI(api_key)
+    except Exception as err:
+        term.print_failed()
+        term.print(f"{get_tag(TAG_ERROR)} Unable to initialize Gemini AI client: {err}", True)
+        return None
+
+def send_ai_telegram_message(ai_client:GeminiAI | None, prompt:str, fallback_message:str, tone:str | None = None, prefix:str = "", disable_notification:bool=False) -> None:
+    generated_message = None
+    full_prompt = f"{prefix}{prompt}" if prefix else prompt
+
+    if ai_client is not None:
+        try:
+            response = ai_client.generate_text(full_prompt, tone=tone)
+            if response.strip():
+                generated_message = f"{prefix}{response.strip()}"
+        except Exception as err:
+            term.print_failed()
+            term.print(f"{get_tag(TAG_ERROR)} Gemini AI generation failed: {err}", True)
+
+    if generated_message is None:
+        fallback = fallback_message.strip()
+        message = f"{prefix}{fallback}".strip()
+        message += f" ({get_tag(TAG_ERROR)} ai message unavailable)"
+    else:
+        message = generated_message
+
+    send_telegram_message(message, disable_notification=disable_notification)
+
+def send_telegram_message(message:str, disable_notification:bool=False) -> None:
+    """
+    Best-effort Telegram notifier used for important user-facing events.
+    """
+    global _TELEGRAM_SERVICE
+
+    if not message:
+        return
+
+    token = os.getenv(ENV_TELEGRAM_TOKEN)
+    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
+
+    if not token:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        return
+
+    try:
+        if _TELEGRAM_SERVICE is None:
+            _TELEGRAM_SERVICE = telegram.TelegramService(bot_token=token, chat_id=chat_id)
+
+        _TELEGRAM_SERVICE.send_message(message, disable_notification=disable_notification)
+
+    except telegram.TelegramConfigurationError as err:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram configuration error: {err}", True)
+    except telegram.TelegramServiceError as err:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram service error: {err}", True)
+    except Exception as err:  # pragma: no cover - safety net
+        term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+
 def _normalize_skip_days(skip_days) -> list[str]:
     if isinstance(skip_days, str):
         skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
     return [str(day) for day in (skip_days or [])]
+
+def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
+    try:
+        return yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_AI_TONE)
+    except Exception:
+        return None
 
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
@@ -179,6 +261,12 @@ def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEv
     return events
 
 def main():
+    
+    parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
+    parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
+    parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
+    args = parser.parse_args()
+
     #region CONFIG_LOAD
     print_step(TAG_CALENDAR_MERGE, "reading config...", False)
     load_dotenv()
@@ -189,6 +277,18 @@ def main():
     except Exception as err:
         term.print_failed()
         raise RuntimeError("Unable to open YAML configuration") from err
+
+    ai_tone = _get_ai_tone(yaml_helper)
+    ai_client = create_ai_service(os.getenv(ENV_GEMINI_API_KEY)) if (args.first or args.last) else None
+
+    if args.first:
+        send_ai_telegram_message(
+            ai_client,
+            "Write a cheerful good morning message, different every time. One-liner only.",
+            "calendar-merge started for today.",
+            tone=ai_tone,
+            prefix="☀️ ",
+        )
 
     try:
         future_event_days = int(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
@@ -394,6 +494,15 @@ def main():
 
         source_index += 1
 
+    if args.last:
+        send_ai_telegram_message(
+            ai_client,
+            "Write a cheerful end of day wrap-up message, different every time. One-liner only.",
+            "calendar-merge finished for today.",
+            tone=ai_tone,
+            prefix="🌙 ",
+        )
+
 if __name__ == "__main__":
     merge_start = perf_counter()
     term.print_header_box("iCloud calendar merger")
@@ -401,5 +510,7 @@ if __name__ == "__main__":
         main()
     except Exception as err:
         term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {err}")
+        send_telegram_message(f"Calendar merge failed: {err}")
+
     merge_end = perf_counter()
     term.print_header_box("merge & sync completed", f"total time: {merge_end - merge_start:.3f} seconds")
