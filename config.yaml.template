@@ -1,6 +1,7 @@
 config:
   skip_days: 0, 6
   future_events_days: 5
+  ai_tone: ""
 
 source-calendar-0:
   source: ""

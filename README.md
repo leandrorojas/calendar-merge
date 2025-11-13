@@ -7,6 +7,7 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Normalizes timezones and filters out weekends (or any days you choose).
 - Tags each imported event so you can trace the original source.
 - Works with iCloud's built-in 2FA flow.
+- Optional Telegram alerts (including morning/night summaries via Gemini AI) keep you informed even when you're away from the terminal.
 
 ## Requirements
 - Python 3.12+
@@ -42,12 +43,16 @@ Add one entry per calendar feed.
 
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
+- `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications (optional, required if you want Telegram alerts).
+- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional). If it’s missing, run `python scripts/telegram_sandbox.py` to infer it automatically.
+- `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
 - `config.future_events_days`: Number of days ahead to pull events (e.g., `5` fetches the next five days).
+- `config.ai_tone`: Optional text describing how Gemini AI should shape its responses (e.g., `"friendly"`, `"concise/professional"`). Use an empty string to leave Gemini’s default tone.
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
   - `tag`: Label enclosed in brackets in the generated iCloud event title.
@@ -59,6 +64,7 @@ Example:
 config:
   skip_days: 5, 6
   future_events_days: 7
+  ai_tone: "friendly and concise"
 
 source-calendar-0:
   source: "Work"
@@ -81,10 +87,29 @@ Run the merger after updating your `.env` and `config.yaml`:
 uv run calendar-merge
 ```
 
+Add the optional flags when you want Telegram updates:
+
+```bash
+# Morning sync + AI/Telegram "good morning"
+uv run calendar-merge --first
+
+# Evening sync + AI/Telegram wrap-up
+uv run calendar-merge --last
+```
+
 During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
 
 ### Scheduling
 To keep your calendars in sync automatically, hook the command into your scheduler of choice (e.g., `cron`, launchd, Windows Task Scheduler). Make sure the job runs under a user session that has the required iCloud authentication.
+
+#### Telegram / AI summaries
+- Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
+- Add `--last` to send an “end of day” notification.
+- Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.
+- To validate your Telegram configuration and automatically capture the chat id, run:
+  ```bash
+  uv run python scripts/telegram_sandbox.py
+  ```
 
 ## Notes
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
