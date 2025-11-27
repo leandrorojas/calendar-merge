@@ -19,7 +19,7 @@ build-backend = "hatchling.build"
 include = ["src/merge.py"]
 
 [tool.uv.sources]
-pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.6.1" }
+pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.1" }
 
 # Optional: CLI entry point (runs merge:main)
 [project.scripts]
