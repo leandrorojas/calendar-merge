@@ -6,10 +6,11 @@ import argparse
 
 # partial imports
 from pathlib import Path
+import asyncio
 from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
@@ -23,7 +24,7 @@ from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 from pyfangs.ai import GeminiAI
 import pyfangs.terminal as term
-import pyfangs.telegram as telegram
+import pyfangs.telegram as tg
 
 #region CONSTS
 YAML_FILENAME = "config.yaml"
@@ -62,7 +63,7 @@ TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.Termin
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
 
-_TELEGRAM_SERVICE: telegram.TelegramService | None = None
+_TELEGRAM_NOTIFIER: tg.TelegramNotifier | None = None
 
 class EventAction(Enum):
     none = 0
@@ -80,6 +81,7 @@ class MergeEvent(object):
 def validate_2fa(api: PyiCloudService) -> bool:
     #TODO: the terminal is expecting "done" or "failed" messages. So the first print of each section must consider this
     status:bool = True
+    global _TELEGRAM_NOTIFIER
 
     if api.requires_2fa:
         security_key_names = api.security_key_names
@@ -104,7 +106,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", True)
             send_telegram_message("Calendar merger needs the Apple 2FA code. Please provide or approve the code.")
-            result = api.validate_2fa_code(input("Enter the code you received on one of your approved devices: "))
+            result = api.validate_2fa_code(prompt_telegram_reply("provide the Apple 2FA code"))
             print_step(TAG_2F_AUTH, f"Code validation result: {result}", True)
 
             if not result:
@@ -199,7 +201,26 @@ def send_telegram_message(message:str, disable_notification:bool=False) -> None:
     """
     Best-effort Telegram notifier used for important user-facing events.
     """
-    global _TELEGRAM_SERVICE
+    if not message:
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    coro = send_telegram_message_async(message, disable_notification)
+    if loop is None:
+        try:
+            asyncio.run(coro)
+        except Exception as err:  # pragma: no cover - safety net
+            term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+    else:
+        # Fire-and-forget when already inside an event loop to avoid nesting asyncio.run.
+        loop.create_task(coro)
+
+async def send_telegram_message_async(message: str, disable_notification: bool = False) -> None:
+    global _TELEGRAM_NOTIFIER
 
     if not message:
         return
@@ -211,18 +232,42 @@ def send_telegram_message(message:str, disable_notification:bool=False) -> None:
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
         return
 
-    try:
-        if _TELEGRAM_SERVICE is None:
-            _TELEGRAM_SERVICE = telegram.TelegramService(bot_token=token, chat_id=chat_id)
+    if _TELEGRAM_NOTIFIER is None:
+        # Lazy init so we only create the notifier if we actually need to send something.
+        # Reuse the same bot instance for the whole process.
+        _TELEGRAM_NOTIFIER = tg.TelegramNotifier(token=token, chat_id=chat_id)
 
-        _TELEGRAM_SERVICE.send_message(message, disable_notification=disable_notification)
+    notifier = _TELEGRAM_NOTIFIER
+    if disable_notification:
+        await notifier.bot.send_message(chat_id=notifier.chat_id, text=message, disable_notification=True)
+    else:
+        await notifier.send(message)
 
-    except telegram.TelegramConfigurationError as err:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram configuration error: {err}", True)
-    except telegram.TelegramServiceError as err:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram service error: {err}", True)
-    except Exception as err:  # pragma: no cover - safety net
-        term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+def prompt_telegram_reply(prompt: str) -> str | None:
+    return asyncio.run(_wait_for_telegram_reply(prompt))
+
+async def _wait_for_telegram_reply(prompt: str) -> str | None:
+    global _TELEGRAM_NOTIFIER
+
+    mark = datetime.now(timezone.utc)
+    await send_telegram_message_async(prompt)  # initializes _TELEGRAM_NOTIFIER
+    notifier = _TELEGRAM_NOTIFIER
+    offset = None
+
+    while True:
+        updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
+        if updates:
+            offset = updates[-1].update_id + 1
+            for upd in updates:
+                msg = getattr(upd, "message", None)
+                if msg and msg.text:
+                    msg_dt = msg.date
+                    if msg_dt and msg_dt.tzinfo is None:
+                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                    if msg_dt and msg_dt >= mark:
+                        return msg.text
+        else:
+            await asyncio.sleep(1)  # small pause before next poll
 
 def _normalize_skip_days(skip_days) -> list[str]:
     if isinstance(skip_days, str):
@@ -306,7 +351,7 @@ def main():
     #endregion
 
     #region ICLOUD_AUTH
-    print_step(TAG_ICLOUD_AUTH, "authenticating to iCloud...", False)
+    print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", False)
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
     except Exception as err:
@@ -323,7 +368,9 @@ def main():
     except Exception as err:
         term.print_failed()
         raise RuntimeError("2FA validation error") from err
+    response = prompt_telegram_reply("show me the code byatch")
     term.print_done()
+    term.print(response)
     #endregion
 
     #region ICLOUD_CALENDAR_LOAD
@@ -506,6 +553,7 @@ def main():
 if __name__ == "__main__":
     merge_start = perf_counter()
     term.print_header_box("iCloud calendar merger")
+
     try:
         main()
     except Exception as err:
