@@ -79,7 +79,6 @@ class MergeEvent(object):
     action:EventAction
 
 def validate_2fa(api: PyiCloudService) -> bool:
-    #TODO: the terminal is expecting "done" or "failed" messages. So the first print of each section must consider this
     status:bool = True
     global _TELEGRAM_NOTIFIER
 
@@ -105,7 +104,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", True)
-            send_telegram_message("Calendar merger needs the Apple 2FA code. Please provide or approve the code.")
+            print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", True)
             result = api.validate_2fa_code(prompt_telegram_reply("provide the Apple 2FA code"))
             print_step(TAG_2F_AUTH, f"Code validation result: {result}", True)
 
@@ -368,9 +367,7 @@ def main():
     except Exception as err:
         term.print_failed()
         raise RuntimeError("2FA validation error") from err
-    response = prompt_telegram_reply("show me the code byatch")
     term.print_done()
-    term.print(response)
     #endregion
 
     #region ICLOUD_CALENDAR_LOAD
