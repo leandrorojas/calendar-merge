@@ -63,8 +63,6 @@ TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.Termin
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
 
-_TELEGRAM_NOTIFIER: tg.TelegramNotifier | None = None
-
 class EventAction(Enum):
     none = 0
     add = 1
@@ -80,7 +78,6 @@ class MergeEvent(object):
 
 def validate_2fa(api: PyiCloudService) -> bool:
     status:bool = True
-    global _TELEGRAM_NOTIFIER
 
     if api.requires_2fa:
         security_key_names = api.security_key_names
@@ -219,8 +216,6 @@ def send_telegram_message(message:str, disable_notification:bool=False) -> None:
         loop.create_task(coro)
 
 async def send_telegram_message_async(message: str, disable_notification: bool = False) -> None:
-    global _TELEGRAM_NOTIFIER
-
     if not message:
         return
 
@@ -231,42 +226,84 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
         return
 
-    if _TELEGRAM_NOTIFIER is None:
-        # Lazy init so we only create the notifier if we actually need to send something.
-        # Reuse the same bot instance for the whole process.
-        _TELEGRAM_NOTIFIER = tg.TelegramNotifier(token=token, chat_id=chat_id)
+    notifier_factory = tg.TelegramNotifier
+    supports_ctx = hasattr(notifier_factory, "__aenter__")
 
-    notifier = _TELEGRAM_NOTIFIER
-    if disable_notification:
-        await notifier.bot.send_message(chat_id=notifier.chat_id, text=message, disable_notification=True)
+    async def _send_with(notifier: tg.TelegramNotifier) -> None:
+        # Prefer helper method when available (pyfangs newer versions), fallback for backwards compatibility.
+        if hasattr(notifier, "send_message"):
+            await notifier.send_message(message=message, disable_notification=disable_notification)
+        elif disable_notification:
+            await notifier.bot.send_message(chat_id=notifier.chat_id, text=message, disable_notification=True)
+        else:
+            await notifier.send(message)
+
+    if supports_ctx:
+        async with notifier_factory(token=token, chat_id=chat_id) as notifier:
+            await _send_with(notifier)
     else:
-        await notifier.send(message)
+        notifier = notifier_factory(token=token, chat_id=chat_id)
+        try:
+            await _send_with(notifier)
+        finally:
+            close_fn = getattr(notifier, "close", None)
+            if close_fn:
+                maybe_coro = close_fn()
+                if asyncio.iscoroutine(maybe_coro):
+                    await maybe_coro
 
 def prompt_telegram_reply(prompt: str) -> str | None:
     return asyncio.run(_wait_for_telegram_reply(prompt))
 
 async def _wait_for_telegram_reply(prompt: str) -> str | None:
-    global _TELEGRAM_NOTIFIER
+    token = os.getenv(ENV_TELEGRAM_TOKEN)
+    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
+    if not token:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        return None
 
+    notifier_factory = tg.TelegramNotifier
+    supports_ctx = hasattr(notifier_factory, "__aenter__")
     mark = datetime.now(timezone.utc)
-    await send_telegram_message_async(prompt)  # initializes _TELEGRAM_NOTIFIER
-    notifier = _TELEGRAM_NOTIFIER
-    offset = None
 
-    while True:
-        updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
-        if updates:
-            offset = updates[-1].update_id + 1
-            for upd in updates:
-                msg = getattr(upd, "message", None)
-                if msg and msg.text:
-                    msg_dt = msg.date
-                    if msg_dt and msg_dt.tzinfo is None:
-                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
-                    if msg_dt and msg_dt >= mark:
-                        return msg.text
+    async def _send_prompt(notifier: tg.TelegramNotifier) -> None:
+        if hasattr(notifier, "send_message"):
+            await notifier.send_message(message=prompt, disable_notification=False)
         else:
-            await asyncio.sleep(1)  # small pause before next poll
+            await notifier.send(prompt)
+
+    async def _poll_for_reply(notifier: tg.TelegramNotifier) -> str | None:
+        offset = None
+        await _send_prompt(notifier)
+
+        while True:
+            updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
+            if updates:
+                offset = updates[-1].update_id + 1
+                for upd in updates:
+                    msg = getattr(upd, "message", None)
+                    if msg and msg.text:
+                        msg_dt = msg.date
+                        if msg_dt and msg_dt.tzinfo is None:
+                            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                        if msg_dt and msg_dt >= mark:
+                            return msg.text
+            else:
+                await asyncio.sleep(1)  # small pause before next poll
+
+    if supports_ctx:
+        async with notifier_factory(token=token, chat_id=chat_id) as notifier:
+            return await _poll_for_reply(notifier)
+
+    notifier = notifier_factory(token=token, chat_id=chat_id)
+    try:
+        return await _poll_for_reply(notifier)
+    finally:
+        close_fn = getattr(notifier, "close", None)
+        if close_fn:
+            maybe_coro = close_fn()
+            if asyncio.iscoroutine(maybe_coro):
+                await maybe_coro
 
 def _normalize_skip_days(skip_days) -> list[str]:
     if isinstance(skip_days, str):
@@ -328,7 +365,7 @@ def main():
     if args.first:
         send_ai_telegram_message(
             ai_client,
-            "Write a cheerful good morning message, different every time. One-liner only.",
+            "Write a good morning message, different every time. One-liner only.",
             "calendar-merge started for today.",
             tone=ai_tone,
             prefix="☀️ ",
@@ -541,7 +578,7 @@ def main():
     if args.last:
         send_ai_telegram_message(
             ai_client,
-            "Write a cheerful end of day wrap-up message, different every time. One-liner only.",
+            "Write a end of day wrap-up message, different every time. One-liner only.",
             "calendar-merge finished for today.",
             tone=ai_tone,
             prefix="🌙 ",
