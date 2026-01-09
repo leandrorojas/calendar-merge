@@ -310,6 +310,21 @@ def _normalize_skip_days(skip_days) -> list[str]:
         skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
     return [str(day) for day in (skip_days or [])]
 
+def _calculate_future_date(start_date: datetime, future_days: int, skip_days: list[str]) -> datetime:
+    current_date = start_date
+    counted_days = 0
+
+    while counted_days < future_days:
+        current_date += timedelta(days=1)
+        if str(current_date.weekday()) in skip_days:
+            continue
+        counted_days += 1
+
+    return current_date
+
+def _end_of_day(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=dt.tzinfo)
+
 def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
     try:
         return yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_AI_TONE)
@@ -422,7 +437,7 @@ def main():
         raise RuntimeError("No calendar GUID available")
 
     filter_start = datetime.today()
-    filter_end = datetime.today() + timedelta(days=future_event_days)
+    filter_end = _calculate_future_date(filter_start, future_event_days, skip_days)
 
     try:
         all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
@@ -434,8 +449,8 @@ def main():
 
     now = datetime.now()
     today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
-    cut_off_candidate = now + timedelta(days=future_event_days)
-    cut_off_date = datetime(cut_off_candidate.year, cut_off_candidate.month, cut_off_candidate.day, 23, 59, 59)
+    cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
+    cut_off_date = _end_of_day(cut_off_candidate)
 
     source_index = 0
     term.print_done()
