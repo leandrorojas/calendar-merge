@@ -449,8 +449,7 @@ def main():
 
     now = datetime.now()
     today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
-    cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
-    cut_off_date = _end_of_day(cut_off_candidate)
+    cut_off_date  = _end_of_day(_calculate_future_date(now, future_event_days, skip_days))
 
     source_index = 0
     term.print_done()
