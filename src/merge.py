@@ -59,11 +59,11 @@ ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
 ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
 ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
 
-YAML_FILENAME_STATE = "state.json"
-YAML_SECTION_STATE = "state"
-YAML_SETTING_OVERRIDE_FLAG = "override_flag"
-YAML_SETTING_OVERRIDE_DATE = "override_date"
-YAML_SETTING_TELEGRAM_OFFSET = "telegram_offset"
+JSON_FILENAME_STATE = "state.json"
+JSON_SECTION_STATE = "state"
+JSON_SETTING_OVERRIDE_FLAG = "override_flag"
+JSON_SETTING_OVERRIDE_DATE = "override_date"
+JSON_SETTING_TELEGRAM_OFFSET = "telegram_offset"
 TELEGRAM_COMMAND_OVERRIDE = "override"
 TELEGRAM_COMMAND_CANCEL = "cancel"
 
@@ -349,15 +349,15 @@ def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
 
 def _load_state(state_path: str) -> dict:
     """Load persisted override state or return defaults."""
-    defaults: dict = {YAML_SETTING_OVERRIDE_FLAG: False, YAML_SETTING_OVERRIDE_DATE: None, YAML_SETTING_TELEGRAM_OFFSET: None}
+    defaults: dict = {JSON_SETTING_OVERRIDE_FLAG: False, JSON_SETTING_OVERRIDE_DATE: None, JSON_SETTING_TELEGRAM_OFFSET: None}
     try:
         with open(state_path, "r") as f:
             data = json.load(f)
-        section = data.get(YAML_SECTION_STATE) or {}
+        section = data.get(JSON_SECTION_STATE) or {}
         return {
-            YAML_SETTING_OVERRIDE_FLAG: bool(section.get(YAML_SETTING_OVERRIDE_FLAG, False)),
-            YAML_SETTING_OVERRIDE_DATE: section.get(YAML_SETTING_OVERRIDE_DATE),
-            YAML_SETTING_TELEGRAM_OFFSET: section.get(YAML_SETTING_TELEGRAM_OFFSET),
+            JSON_SETTING_OVERRIDE_FLAG: bool(section.get(JSON_SETTING_OVERRIDE_FLAG, False)),
+            JSON_SETTING_OVERRIDE_DATE: section.get(JSON_SETTING_OVERRIDE_DATE),
+            JSON_SETTING_TELEGRAM_OFFSET: section.get(JSON_SETTING_TELEGRAM_OFFSET),
         }
     except FileNotFoundError:
         return defaults
@@ -367,7 +367,7 @@ def _load_state(state_path: str) -> dict:
 def _save_state(state_path: str, state: dict) -> None:
     """Persist override state to JSON file."""
     with open(state_path, "w") as f:
-        json.dump({YAML_SECTION_STATE: state}, f, indent=2)
+        json.dump({JSON_SECTION_STATE: state}, f, indent=2)
 
 def is_skip_day(date_val: datetime, skip_days: list[str]) -> bool:
     """Return True if the given datetime falls on a configured skip day."""
@@ -396,7 +396,7 @@ async def _poll_telegram_commands_async(state: dict) -> set[str]:
         return set()
 
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
-    offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
+    offset = state.get(JSON_SETTING_TELEGRAM_OFFSET)
     known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL}
     found: set[str] = set()
 
@@ -429,7 +429,7 @@ async def _poll_telegram_commands_async(state: dict) -> set[str]:
                 if asyncio.iscoroutine(maybe_coro):
                     await maybe_coro
 
-    state[YAML_SETTING_TELEGRAM_OFFSET] = offset
+    state[JSON_SETTING_TELEGRAM_OFFSET] = offset
     return found
 
 def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
@@ -440,13 +440,13 @@ def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
     - 1C: today >  override_date => clear as expired and send a warning
     Returns True if state was changed.
     """
-    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
     if not override_date_str:
         return False
     try:
         override_date_val = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
     except (ValueError, TypeError):
-        state[YAML_SETTING_OVERRIDE_DATE] = None
+        state[JSON_SETTING_OVERRIDE_DATE] = None
         return True
 
     today_date = today.date()
@@ -465,7 +465,7 @@ def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
     # 1C: stale — clear with warning
     print_step(TAG_OVERRIDE, f"override_date {override_date_str} expired without being consumed, clearing.", True)
     send_telegram_message(f"⚠️ Override date {override_date_str} expired without being consumed. Clearing.")
-    state[YAML_SETTING_OVERRIDE_DATE] = None
+    state[JSON_SETTING_OVERRIDE_DATE] = None
     return True
 
 def _handle_cancel(args, telegram_commands: set[str], state: dict, today: datetime) -> tuple[bool, bool, str | None]:
@@ -489,7 +489,7 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     if not (cli_cancel or tg_cancel):
         return False, False, None
 
-    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
 
     # Not eligible: no override armed
     if not override_date_str:
@@ -500,7 +500,7 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     try:
         override_date_val = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
     except (ValueError, TypeError):
-        state[YAML_SETTING_OVERRIDE_DATE] = None
+        state[JSON_SETTING_OVERRIDE_DATE] = None
         return False, False, None
 
     today_date = today.date()
@@ -512,8 +512,8 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
         return False, False, None
 
     # Eligible — clear override state (also clears flag to prevent immediate re-arming)
-    state[YAML_SETTING_OVERRIDE_DATE] = None
-    state[YAML_SETTING_OVERRIDE_FLAG] = False
+    state[JSON_SETTING_OVERRIDE_DATE] = None
+    state[JSON_SETTING_OVERRIDE_FLAG] = False
 
     if override_date_val == today_date:
         print_step(TAG_CANCEL, f"cancel applied: override for today ({override_date_str}) disarmed, stopping execution. Scope: future-today.", True)
@@ -532,8 +532,8 @@ def _ingest_override_flag(args, telegram_commands: set[str], state: dict) -> boo
     the flag or override_date is already set. Mutates state in place. Returns True if
     state changed.
     """
-    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
-    override_flag = state.get(YAML_SETTING_OVERRIDE_FLAG, False)
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
+    override_flag = state.get(JSON_SETTING_OVERRIDE_FLAG, False)
 
     cli_override = getattr(args, "override", False)
     tg_override = TELEGRAM_COMMAND_OVERRIDE in telegram_commands
@@ -553,7 +553,7 @@ def _ingest_override_flag(args, telegram_commands: set[str], state: dict) -> boo
         print_step(TAG_OVERRIDE, "override signal received but override_flag already pending.", True)
         return False
 
-    state[YAML_SETTING_OVERRIDE_FLAG] = True
+    state[JSON_SETTING_OVERRIDE_FLAG] = True
     print_step(TAG_OVERRIDE, "override flag set.", True)
     return True
 
@@ -565,19 +565,19 @@ def _compute_and_persist_override_date(args, state: dict, skip_days: list[str], 
     - Otherwise                           => override_date = next_skip_day
     Returns True if state changed.
     """
-    if not state.get(YAML_SETTING_OVERRIDE_FLAG, False):
+    if not state.get(JSON_SETTING_OVERRIDE_FLAG, False):
         return False
 
     # Guard: flag set but date already present (shouldn't normally occur — clear flag and exit)
-    if state.get(YAML_SETTING_OVERRIDE_DATE):
-        state[YAML_SETTING_OVERRIDE_FLAG] = False
+    if state.get(JSON_SETTING_OVERRIDE_DATE):
+        state[JSON_SETTING_OVERRIDE_FLAG] = False
         return True
 
     is_first = getattr(args, "first", False)
     if is_first and is_skip_day(today, skip_days):
         new_date = today.strftime("%Y-%m-%d")
-        state[YAML_SETTING_OVERRIDE_DATE] = new_date
-        state[YAML_SETTING_OVERRIDE_FLAG] = False
+        state[JSON_SETTING_OVERRIDE_DATE] = new_date
+        state[JSON_SETTING_OVERRIDE_FLAG] = False
         print_step(TAG_OVERRIDE, f"override armed for today ({new_date}).", True)
         send_telegram_message(f"✅ Override armed: processing enabled for today ({new_date}).")
         return True
@@ -585,12 +585,12 @@ def _compute_and_persist_override_date(args, state: dict, skip_days: list[str], 
     next_skip = _next_skip_day(today, skip_days)
     if next_skip is None:
         print_step(TAG_OVERRIDE, "no skip days configured, override has no effect.", True)
-        state[YAML_SETTING_OVERRIDE_FLAG] = False
+        state[JSON_SETTING_OVERRIDE_FLAG] = False
         return True
 
     new_date = next_skip.strftime("%Y-%m-%d")
-    state[YAML_SETTING_OVERRIDE_DATE] = new_date
-    state[YAML_SETTING_OVERRIDE_FLAG] = False
+    state[JSON_SETTING_OVERRIDE_DATE] = new_date
+    state[JSON_SETTING_OVERRIDE_FLAG] = False
     print_step(TAG_OVERRIDE, f"override armed for next skip day ({new_date}).", True)
     send_telegram_message(f"✅ Override armed: processing will be enabled on {new_date}.")
     return True
@@ -600,7 +600,7 @@ def _should_process(state: dict, today: datetime, skip_days: list[str]) -> bool:
     Step 1A/1B + Step 3: Determine whether data processing should run this invocation.
     Returns True if processing is enabled.
     """
-    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
     if override_date_str:
         try:
             override_date_val = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
@@ -612,7 +612,7 @@ def _should_process(state: dict, today: datetime, skip_days: list[str]) -> bool:
 
 def _consume_override_on_last(state: dict, today: datetime, state_path: str) -> None:
     """Step 1A consume rule: on --last, clear override_date if today matches."""
-    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
     if not override_date_str:
         return
     try:
@@ -620,7 +620,7 @@ def _consume_override_on_last(state: dict, today: datetime, state_path: str) -> 
     except (ValueError, TypeError):
         return
     if today.date() == override_date_val:
-        state[YAML_SETTING_OVERRIDE_DATE] = None
+        state[JSON_SETTING_OVERRIDE_DATE] = None
         _save_state(state_path, state)
         print_step(TAG_OVERRIDE, f"override consumed for {override_date_str} (last run of day).", True)
         send_telegram_message(f"✅ Override for {override_date_str} consumed. Normal schedule resumes tomorrow.")
@@ -743,18 +743,18 @@ def main():
 
     #region OVERRIDE_HANDLING
     today = datetime.now()
-    state_path = fs.join_paths(project_root, YAML_FILENAME_STATE)
+    state_path = fs.join_paths(project_root, JSON_FILENAME_STATE)
     state = _load_state(state_path)
 
     # Poll Telegram once per run so cancel (Step 0) and override (Step 2) share the same
     # update stream without either consuming messages the other needs.
-    old_offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
+    old_offset = state.get(JSON_SETTING_TELEGRAM_OFFSET)
     try:
         telegram_commands = asyncio.run(_poll_telegram_commands_async(state))
     except Exception as err:
         print_step(TAG_CANCEL, f"Telegram poll failed: {err}", True)
         telegram_commands = set()
-    offset_changed = state.get(YAML_SETTING_TELEGRAM_OFFSET) != old_offset
+    offset_changed = state.get(JSON_SETTING_TELEGRAM_OFFSET) != old_offset
 
     # Step 0: cancel handling runs before everything else
     should_cancel, cancel_needs_cleanup, cancel_cleanup_date = _handle_cancel(args, telegram_commands, state, today)
