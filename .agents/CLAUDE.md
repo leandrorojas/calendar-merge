@@ -29,9 +29,15 @@ uv run calendar-merge --override
 
 # Cancel an active or pending override
 uv run calendar-merge --cancel
+
+# Preview planned changes without modifying iCloud or state
+uv run calendar-merge --dry-run
+
+# Run unit tests
+uv run pytest tests/
 ```
 
-There are no tests, linter, or CI/CD pipeline configured.
+Unit tests exist in `tests/test_state_matrix.py`. No linter or CI/CD pipeline configured.
 
 ## Architecture
 
@@ -42,10 +48,12 @@ The entire application lives in a single file: `src/merge.py` (entry point: `mai
 1. **Config load** — reads `.env` (secrets) and `config.yaml` (settings) via `pyfangs.YamlHelper`
 2. **Override/cancel handling** — runs every invocation before iCloud auth:
    - Loads `state.json`; polls Telegram once for pending commands (`override` / `cancel`)
-   - **Step 0** `_handle_cancel`: if cancel received and eligible, clears override state and exits early (no sync)
-   - **Step 1** `_handle_override_date_lifecycle`: logs active (1A), pending (1B), or clears stale (1C) `override_date`
+   - **Step 0** `_handle_cancel`: if cancel received and eligible, clears override state; returns `(stop, needs_cleanup, cleanup_date)`:
+     - `override_date == today` → authenticates iCloud, removes future-today events (`FUTURE_TODAY` scope), exits
+     - `override_date > today` → authenticates iCloud, removes all events for that date (`ALL_DAY` scope), continues
+   - **Step 1** `_handle_override_date_lifecycle`: logs active (1A, Telegram silent), pending (1B), or clears stale (1C) `override_date`
    - **Step 2** `_ingest_override_flag` + `_compute_and_persist_override_date`: arms `override_date` from CLI/Telegram signal
-   - Saves `state.json` if anything changed
+   - Saves `state.json` if anything changed (skipped entirely in `--dry-run`)
 3. **Processing decision** (`_should_process`) — skips iCloud entirely on skip days unless `override_date == today`
 4. **iCloud auth** — authenticates via `pyicloud`, handles 2FA/2SA (2FA: FIDO2 keys or Telegram-polled codes; 2SA: terminal-entered verification code)
 5. **iCloud calendar load** — fetches existing iCloud events within the configured date range, filters out all-day events and skip-days
@@ -54,7 +62,7 @@ The entire application lives in a single file: `src/merge.py` (entry point: `mai
    - Parses with `icalendar`, filters by date range and skip-days; current implementation skips VEVENT entries where `TRANSP` is present
    - Reconciles: marks events for add (in source but not iCloud) or delete (in iCloud but not source)
    - Syncs changes to iCloud
-7. **Override consume** (`_consume_override_on_last`) — on `--last`, clears `override_date` if today matches
+7. **Override consume** (`_consume_override_on_last`) — on `--last`, clears `override_date` if today matches; skipped in `--dry-run`
 8. **Telegram notifications** — sends AI-generated or static morning/evening messages if `--first`/`--last` flags are set
 
 ### Operational Caveats
@@ -64,6 +72,7 @@ The entire application lives in a single file: `src/merge.py` (entry point: `mai
 ### Key Types
 
 - `EventAction` (Enum): `none`, `add`, `delete`
+- `RemoveMode` (Enum): `FUTURE_TODAY` (start >= now on target date), `ALL_DAY` (all events on target date)
 - `MergeEvent` (dataclass): `title`, `start`, `end`, `full_event` (iCloud EventObject), `action`
 
 ### Configuration
@@ -89,9 +98,25 @@ Uses async/await with backward-compatible patterns (context manager detection, f
 
 Merged events in iCloud use the format: `[tag] title/source` (e.g., `[WRK] Team Calendar/Google`).
 
+### Dry-run Mode
+
+`--dry-run` is combinable with any flag. When active:
+- No iCloud events are added or deleted.
+- No `state.json` writes occur.
+- Each planned deletion prints `[DRY-RUN] would remove '...'`.
+- `_consume_override_on_last` prints what it would do but does not clear state.
+
+### Constants Naming Convention
+
+- `JSON_SETTING_*` / `JSON_SECTION_*` / `JSON_FILENAME_STATE` — keys for `state.json`
+- `YAML_SETTING_*` / `YAML_SECTION_*` / `YAML_FILENAME` — keys for `config.yaml`
+
+Do not use `YAML_` prefixes for JSON state fields, and vice versa.
+
 ## Validation
 
 - Run basic sync path: `uv run calendar-merge`
 - Run notification paths when needed: `uv run calendar-merge --first` and/or `uv run calendar-merge --last`
 - Run override/cancel paths when needed: `uv run calendar-merge --override` / `--cancel`
-- There are currently no automated tests configured in this repository.
+- Preview changes safely: `uv run calendar-merge --dry-run`
+- Run unit tests: `uv run pytest tests/`
