@@ -610,7 +610,7 @@ def _should_process(state: dict, today: datetime, skip_days: list[str]) -> bool:
             pass
     return not is_skip_day(today, skip_days)  # Step 3
 
-def _consume_override_on_last(state: dict, today: datetime, state_path: str) -> None:
+def _consume_override_on_last(state: dict, today: datetime, state_path: str, dry_run: bool = False) -> None:
     """Step 1A consume rule: on --last, clear override_date if today matches."""
     override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
     if not override_date_str:
@@ -620,6 +620,9 @@ def _consume_override_on_last(state: dict, today: datetime, state_path: str) -> 
     except (ValueError, TypeError):
         return
     if today.date() == override_date_val:
+        if dry_run:
+            print_step(TAG_OVERRIDE, f"[DRY-RUN] would consume override for {override_date_str} (last run of day).", True)
+            return
         state[JSON_SETTING_OVERRIDE_DATE] = None
         _save_state(state_path, state)
         print_step(TAG_OVERRIDE, f"override consumed for {override_date_str} (last run of day).", True)
@@ -637,13 +640,14 @@ def remove_synced_events(
     icloud_events: list[MergeEvent],
     calendar_service,
     now: datetime,
+    dry_run: bool = False,
 ) -> int:
     """
     Delete calendar-merge-managed events for target_date according to mode.
     - FUTURE_TODAY: managed events on target_date whose start >= now
     - ALL_DAY:      all managed events on target_date
-    Returns the count of deleted events. Only touches events whose title matches
-    the [TAG] title/source format — no collateral deletions.
+    In dry-run mode prints candidates without deleting. Returns the candidate count.
+    Only touches events whose title matches the [TAG] title/source format — no collateral deletions.
     """
     now_utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
     removed = 0
@@ -654,6 +658,10 @@ def remove_synced_events(
         if event.start.date() != target_date.date():
             continue
         if mode == RemoveMode.FUTURE_TODAY and event.start < now_utc:
+            continue
+        if dry_run:
+            print_step(TAG_CANCEL, f"[DRY-RUN] would remove '{event.title}' ({event.start.strftime('%Y-%m-%d %H:%M')} UTC)", True)
+            removed += 1
             continue
         remove_obj = EventObject(
             pguid=event.full_event["pGuid"],
@@ -700,7 +708,11 @@ def main():
     parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
     parser.add_argument("--override", action="store_true", help="Arm a processing override for the next skip day.")
     parser.add_argument("--cancel", action="store_true", help="Cancel an active or pending processing override.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned changes without modifying iCloud or state.")
     args = parser.parse_args()
+    dry_run: bool = args.dry_run
+    if dry_run:
+        print_step(TAG_CALENDAR_MERGE, "[DRY-RUN] mode active — no events will be deleted and no state will be saved.", True)
 
     #region CONFIG_LOAD
     print_step(TAG_CALENDAR_MERGE, "reading config...", False)
@@ -759,7 +771,8 @@ def main():
     # Step 0: cancel handling runs before everything else
     should_cancel, cancel_needs_cleanup, cancel_cleanup_date = _handle_cancel(args, telegram_commands, state, today)
     if should_cancel:
-        _save_state(state_path, state)
+        if not dry_run:
+            _save_state(state_path, state)
         if cancel_needs_cleanup:
             print_step(TAG_CANCEL, "removing future events for today...", False)
             try:
@@ -770,18 +783,21 @@ def main():
                 today_start = datetime(today.year, today.month, today.day, 0, 0, 0)
                 all_today_events = calendar_service.get_events(from_dt=today_start, to_dt=_end_of_day(today))
                 icloud_events_today = _collect_icloud_events(all_today_events, [])
-                removed = remove_synced_events(today, RemoveMode.FUTURE_TODAY, icloud_events_today, calendar_service, datetime.now(timezone.utc))
+                removed = remove_synced_events(today, RemoveMode.FUTURE_TODAY, icloud_events_today, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
                 term.print_done()
                 print_step(TAG_CANCEL, f"removed {removed} future event(s) for today (scope: future-today).", True)
-                send_telegram_message(f"🗑️ Removed {removed} event(s) for today (scope: future-today).")
+                if not dry_run:
+                    send_telegram_message(f"🗑️ Removed {removed} event(s) for today (scope: future-today).")
             except Exception as err:
                 term.print_failed()
                 print_step(TAG_CANCEL, f"failed to remove events: {err}", True)
-                send_telegram_message(f"⚠️ Cancel cleanup failed: {err}")
+                if not dry_run:
+                    send_telegram_message(f"⚠️ Cancel cleanup failed: {err}")
         return
 
     if cancel_needs_cleanup and cancel_cleanup_date:
-        _save_state(state_path, state)
+        if not dry_run:
+            _save_state(state_path, state)
         print_step(TAG_CANCEL, f"removing all synced events for {cancel_cleanup_date}...", False)
         try:
             icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
@@ -792,19 +808,21 @@ def main():
             cleanup_start = datetime(cleanup_dt.year, cleanup_dt.month, cleanup_dt.day, 0, 0, 0)
             all_cleanup_events = calendar_service.get_events(from_dt=cleanup_start, to_dt=_end_of_day(cleanup_dt))
             icloud_events_cleanup = _collect_icloud_events(all_cleanup_events, [])
-            removed = remove_synced_events(cleanup_dt, RemoveMode.ALL_DAY, icloud_events_cleanup, calendar_service, datetime.now(timezone.utc))
+            removed = remove_synced_events(cleanup_dt, RemoveMode.ALL_DAY, icloud_events_cleanup, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
             term.print_done()
             print_step(TAG_CANCEL, f"removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).", True)
-            send_telegram_message(f"🗑️ Removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).")
+            if not dry_run:
+                send_telegram_message(f"🗑️ Removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).")
         except Exception as err:
             term.print_failed()
             print_step(TAG_CANCEL, f"failed to remove events for {cancel_cleanup_date}: {err}", True)
-            send_telegram_message(f"⚠️ Cancel cleanup failed for {cancel_cleanup_date}: {err}")
+            if not dry_run:
+                send_telegram_message(f"⚠️ Cancel cleanup failed for {cancel_cleanup_date}: {err}")
 
     lifecycle_changed = _handle_override_date_lifecycle(state, today)
     ingest_changed = _ingest_override_flag(args, telegram_commands, state)
     compute_changed = _compute_and_persist_override_date(args, state, skip_days, today)
-    if offset_changed or lifecycle_changed or ingest_changed or compute_changed:
+    if not dry_run and (offset_changed or lifecycle_changed or ingest_changed or compute_changed):
         _save_state(state_path, state)
     #endregion
 
@@ -984,24 +1002,28 @@ def main():
             actionable_events = [event for event in merge_events if event.action != EventAction.none]
             for merge_event in actionable_events:
                 if merge_event.action == EventAction.add:
-                    try:
-                        calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
-                    except Exception as err:
-                        term.print_failed()
-                        raise RuntimeError(f"Unable to add event {merge_event.title}") from err
+                    if not dry_run:
+                        try:
+                            calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
+                        except Exception as err:
+                            term.print_failed()
+                            raise RuntimeError(f"Unable to add event {merge_event.title}") from err
                 elif merge_event.action == EventAction.delete:
-                    remove_event = EventObject(pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title)
-                    try:
-                        calendar_service.remove_event(remove_event)
-                    except Exception as err:
-                        term.print_failed()
-                        raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
+                    if dry_run:
+                        print_step(TAG_CALENDAR_MERGE, f"[DRY-RUN] would remove '{merge_event.title}' ({merge_event.start.strftime('%Y-%m-%d %H:%M')} UTC)", True)
+                    else:
+                        remove_event = EventObject(pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title)
+                        try:
+                            calendar_service.remove_event(remove_event)
+                        except Exception as err:
+                            term.print_failed()
+                            raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
             term.print_done()
 
             source_index += 1
 
     if args.last:
-        _consume_override_on_last(state, today, state_path)
+        _consume_override_on_last(state, today, state_path, dry_run=dry_run)
 
     if args.last:
         send_ai_telegram_message(
