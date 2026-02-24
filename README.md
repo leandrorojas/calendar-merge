@@ -8,6 +8,7 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Tags each imported event so you can trace the original source.
 - Works with iCloud's built-in 2FA flow.
 - Optional Telegram alerts (including morning/night summaries via Gemini AI) keep you informed even when you're away from the terminal.
+- Override/cancel control plane: arm processing on a skip day on demand via Telegram or CLI, and cancel it before it runs.
 
 ## Requirements
 - Python 3.12+
@@ -90,11 +91,17 @@ uv run calendar-merge
 Add the optional flags when you want Telegram updates:
 
 ```bash
-# Morning sync + AI/Telegram "good morning"
+# Morning sync + AI/Telegram “good morning”
 uv run calendar-merge --first
 
 # Evening sync + AI/Telegram wrap-up
 uv run calendar-merge --last
+
+# Arm a processing override for the next skip day
+uv run calendar-merge --override
+
+# Cancel an active or pending override
+uv run calendar-merge --cancel
 ```
 
 During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
@@ -110,6 +117,39 @@ To keep your calendars in sync automatically, hook the command into your schedul
   ```bash
   uv run python scripts/telegram_sandbox.py
   ```
+
+### Override / cancel control plane
+
+By default the script skips processing on any day listed in `config.skip_days`. The override/cancel control plane lets you change this on demand without touching the config.
+
+| Concept | Description |
+|---|---|
+| **skip day** | A day in `config.skip_days` where processing is normally disabled. |
+| **override** | Arms processing for one skip day (the whole day, all cron runs). |
+| **override_date** | The date (`YYYY-MM-DD`) stored in `state.json` while an override is active. |
+| **cancel** | Disarms an active or pending override before it is consumed. |
+
+#### Arming an override
+
+Send `override` (exact, case-insensitive) to your Telegram bot **or** pass `--override` on the CLI. The next cron run picks it up and arms the override:
+
+- If it is the **first run of the day** (`--first`) **and today is a skip day** → override is armed for **today**.
+- Otherwise → override is armed for the **next upcoming skip day**.
+
+The override stays active for the entire day and is automatically cleared after the last run (`--last`).
+
+#### Canceling an override
+
+Send `cancel` to your Telegram bot **or** pass `--cancel` on the CLI. Cancel is eligible when an `override_date` exists and is today or in the future:
+
+- **override_date == today** → override is disarmed and the current run exits without processing.
+- **override_date > today** → override is disarmed and the run continues on its normal (skip-day) schedule.
+
+If no override is armed, cancel is a safe no-op.
+
+#### State file
+
+Override state is persisted in `state.json` at the project root (auto-created, not committed to version control). It stores `override_flag`, `override_date`, and `telegram_offset` (bookmark into the Telegram update stream for idempotent command detection).
 
 ## Notes
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.

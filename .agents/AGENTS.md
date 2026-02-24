@@ -26,16 +26,23 @@ uv sync
 uv run calendar-merge
 uv run calendar-merge --first
 uv run calendar-merge --last
+uv run calendar-merge --override   # arm processing override for next skip day
+uv run calendar-merge --cancel     # cancel active or pending override
 ```
 
 ## Code Layout
 
 - Single-file app flow in `src/merge.py`:
   - load env + yaml config
-  - authenticate to iCloud (2FA aware)
+  - poll Telegram once for pending commands (override / cancel)
+  - Step 0: cancel handling (may exit early)
+  - Step 1: override_date lifecycle (active / pending / stale)
+  - Step 2: override flag ingestion and override_date computation
+  - authenticate to iCloud (2FA aware) — only when processing is enabled
   - read current iCloud events
   - iterate `source-calendar-N` + `CALENDAR_URL_N`
   - diff and apply add/delete operations
+  - consume override_date on `--last`
   - optionally send Telegram/Gemini notifications
 
 ### Key Types
@@ -55,6 +62,27 @@ Merged events use the exact format `[tag] title/source` (e.g., `[WRK] Team Calen
 - `google-generativeai` — Gemini AI for notification messages
 - `dotenv` — environment variable loading
 
+### Override / Cancel Control Plane
+
+Key functions in order of execution inside `main()`:
+
+| Function | PRD Step | Role |
+|---|---|---|
+| `_poll_telegram_commands_async(state)` | — | Polls Telegram once per run; returns `set[str]` of commands found; advances `telegram_offset` |
+| `_handle_cancel(args, telegram_commands, state, today)` | Step 0 | Checks cancel signal; clears override state if eligible; returns `True` to stop execution when canceling today |
+| `_handle_override_date_lifecycle(state, today)` | Step 1 | Logs 1A (active), 1B (pending), or 1C (stale → clears with Telegram warning) |
+| `_ingest_override_flag(args, telegram_commands, state)` | Step 2a | Sets persistent `override_flag` in state when signal received; idempotent |
+| `_compute_and_persist_override_date(args, state, skip_days, today)` | Step 2b | Consumes `override_flag` → computes and stores `override_date` (today if `--first` on skip day, else next skip day) |
+| `_should_process(state, today, skip_days)` | Step 3 | Returns `True` if today == override_date or today is not a skip day |
+| `_consume_override_on_last(state, today, state_path)` | Step 1A consume | Clears `override_date` on `--last` when today matches |
+
+**Telegram polling design:** `_poll_telegram_commands_async` is called once per run and its result (`set[str]`) is shared with both `_handle_cancel` and `_ingest_override_flag`. This ensures cancel and override commands in the same Telegram update batch are never lost to competing offset advances.
+
+**State file (`state.json`):** auto-created at project root; not committed. Fields:
+- `override_flag` (bool) — pending override signal awaiting computation
+- `override_date` (str, `YYYY-MM-DD`) — active or future override date
+- `telegram_offset` (int) — last consumed Telegram update ID; prevents reprocessing old messages
+
 ### Telegram Async Patterns
 
 Telegram functions use backward-compatible async wrappers: context manager detection (`__aenter__`), fire-and-forget via event loop, and a polling-based `prompt_telegram_reply()` for collecting 2FA codes remotely. Preserve these patterns when modifying notification code.
@@ -70,6 +98,8 @@ Telegram functions use backward-compatible async wrappers: context manager detec
   - `config.future_events_days`
   - `config.ai_tone`
   - `source-calendar-0..N` with `source`, `tag`, `title`, `tz`
+- `state.json` (auto-created, do not commit)
+  - `override_flag`, `override_date`, `telegram_offset`
 
 Indexes must stay consecutive and aligned across `.env` and `config.yaml`.
 
