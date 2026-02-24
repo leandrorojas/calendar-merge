@@ -417,8 +417,14 @@ async def _check_telegram_for_override_async(state: dict) -> bool:
     state[YAML_SETTING_TELEGRAM_OFFSET] = offset
     return found
 
-def _clear_stale_override(state: dict, today: datetime) -> bool:
-    """Step 1C: Clear override_date if it is in the past. Returns True if state changed."""
+def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
+    """
+    Step 1: Evaluate override_date against today and handle all three lifecycle cases.
+    - 1A: today == override_date => log processing enabled for the day (consumed on --last)
+    - 1B: today <  override_date => log override pending, today follows normal schedule
+    - 1C: today >  override_date => clear as expired and send a warning
+    Returns True if state was changed.
+    """
     override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
     if not override_date_str:
         return False
@@ -427,11 +433,24 @@ def _clear_stale_override(state: dict, today: datetime) -> bool:
     except (ValueError, TypeError):
         state[YAML_SETTING_OVERRIDE_DATE] = None
         return True
-    if today.date() > override_date_val:
-        print_step(TAG_OVERRIDE, f"override_date {override_date_str} is stale, clearing.", True)
-        state[YAML_SETTING_OVERRIDE_DATE] = None
-        return True
-    return False
+
+    today_date = today.date()
+
+    if today_date == override_date_val:
+        # 1A: active today — override_date stays set until --last
+        print_step(TAG_OVERRIDE, f"override active for today ({override_date_str}), processing enabled all day.", True)
+        return False
+
+    if today_date < override_date_val:
+        # 1B: pending for a future skip day — today follows normal schedule
+        print_step(TAG_OVERRIDE, f"override pending for {override_date_str}, today follows normal schedule.", True)
+        return False
+
+    # 1C: stale — clear with warning
+    print_step(TAG_OVERRIDE, f"override_date {override_date_str} expired without being consumed, clearing.", True)
+    send_telegram_message(f"⚠️ Override date {override_date_str} expired without being consumed. Clearing.")
+    state[YAML_SETTING_OVERRIDE_DATE] = None
+    return True
 
 def _ingest_override_flag(args, state: dict) -> bool:
     """
@@ -620,10 +639,10 @@ def main():
     today = datetime.now()
     state_path = fs.join_paths(project_root, YAML_FILENAME_STATE)
     state = _load_state(state_path)
-    step1c_changed = _clear_stale_override(state, today)
+    lifecycle_changed = _handle_override_date_lifecycle(state, today)
     ingest_changed = _ingest_override_flag(args, state)
     compute_changed = _compute_and_persist_override_date(args, state, skip_days, today)
-    if step1c_changed or ingest_changed or compute_changed:
+    if lifecycle_changed or ingest_changed or compute_changed:
         _save_state(state_path, state)
     #endregion
 
