@@ -454,6 +454,7 @@ def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
     if today_date == override_date_val:
         # 1A: active today — override_date stays set until --last
         print_step(TAG_OVERRIDE, f"override active for today ({override_date_str}), processing enabled all day.", True)
+        send_telegram_message(f"✅ Override active for today ({override_date_str}). Processing enabled.", disable_notification=True)
         return False
 
     if today_date < override_date_val:
@@ -515,13 +516,13 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     state[YAML_SETTING_OVERRIDE_FLAG] = False
 
     if override_date_val == today_date:
-        print_step(TAG_CANCEL, f"cancel applied: override for today ({override_date_str}) disarmed, stopping execution.", True)
-        send_telegram_message(f"🚫 Override for today ({override_date_str}) canceled. Processing stopped for this run.")
+        print_step(TAG_CANCEL, f"cancel applied: override for today ({override_date_str}) disarmed, stopping execution. Scope: future-today.", True)
+        send_telegram_message(f"🚫 Cancel executed for today ({override_date_str}). Scope: future-today. Processing stopped for this run.")
         return True, True, override_date_str  # caller must exit; future today events must be removed
 
     # override_date > today — disarm and signal caller to remove all events for that date
-    print_step(TAG_CANCEL, f"cancel applied: override for {override_date_str} disarmed.", True)
-    send_telegram_message(f"🚫 Override for {override_date_str} canceled.")
+    print_step(TAG_CANCEL, f"cancel applied: override for {override_date_str} disarmed. Scope: all-day.", True)
+    send_telegram_message(f"🚫 Cancel executed for {override_date_str}. Scope: all-day. Events for that date will be removed.")
     return False, True, override_date_str  # caller continues; all synced events for override_date must be removed
 
 def _ingest_override_flag(args, telegram_commands: set[str], state: dict) -> bool:
@@ -771,8 +772,8 @@ def main():
                 icloud_events_today = _collect_icloud_events(all_today_events, [])
                 removed = remove_synced_events(today, RemoveMode.FUTURE_TODAY, icloud_events_today, calendar_service, datetime.now(timezone.utc))
                 term.print_done()
-                print_step(TAG_CANCEL, f"removed {removed} future event(s) for today.", True)
-                send_telegram_message(f"🗑️ Removed {removed} future event(s) for today after cancel.")
+                print_step(TAG_CANCEL, f"removed {removed} future event(s) for today (scope: future-today).", True)
+                send_telegram_message(f"🗑️ Removed {removed} event(s) for today (scope: future-today).")
             except Exception as err:
                 term.print_failed()
                 print_step(TAG_CANCEL, f"failed to remove events: {err}", True)
@@ -793,8 +794,8 @@ def main():
             icloud_events_cleanup = _collect_icloud_events(all_cleanup_events, [])
             removed = remove_synced_events(cleanup_dt, RemoveMode.ALL_DAY, icloud_events_cleanup, calendar_service, datetime.now(timezone.utc))
             term.print_done()
-            print_step(TAG_CANCEL, f"removed {removed} event(s) for {cancel_cleanup_date}.", True)
-            send_telegram_message(f"🗑️ Removed {removed} event(s) for {cancel_cleanup_date} after cancel.")
+            print_step(TAG_CANCEL, f"removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).", True)
+            send_telegram_message(f"🗑️ Removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).")
         except Exception as err:
             term.print_failed()
             print_step(TAG_CANCEL, f"failed to remove events for {cancel_cleanup_date}: {err}", True)
