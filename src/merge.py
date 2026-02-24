@@ -64,11 +64,13 @@ YAML_SETTING_OVERRIDE_FLAG = "override_flag"
 YAML_SETTING_OVERRIDE_DATE = "override_date"
 YAML_SETTING_TELEGRAM_OFFSET = "telegram_offset"
 TELEGRAM_COMMAND_OVERRIDE = "override"
+TELEGRAM_COMMAND_CANCEL = "cancel"
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
 TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
 TAG_OVERRIDE = term.TerminalColors.yellow.value + "override" + term.TerminalColors.reset.value
+TAG_CANCEL = term.TerminalColors.orange.value + "cancel" + term.TerminalColors.reset.value
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
 
@@ -377,28 +379,36 @@ def _next_skip_day(from_date: datetime, skip_days: list[str]) -> datetime | None
         candidate += timedelta(days=1)
     return None
 
-async def _check_telegram_for_override_async(state: dict) -> bool:
-    """Non-blocking poll for an 'override' command in Telegram messages. Updates offset in state."""
+async def _poll_telegram_commands_async(state: dict) -> set[str]:
+    """
+    Non-blocking poll for pending Telegram messages. Returns the set of known command
+    strings found (e.g. {'override'}, {'cancel'}). Updates offset in state.
+    Polling once per run ensures cancel and override share the same update stream without
+    either missing messages consumed by the other.
+    """
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     if not token:
-        return False
+        return set()
 
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
-    found = False
+    known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL}
+    found: set[str] = set()
 
     notifier_factory = tg.TelegramNotifier
     supports_ctx = hasattr(notifier_factory, "__aenter__")
 
     async def _poll(notifier: tg.TelegramNotifier) -> None:
-        nonlocal found, offset
+        nonlocal offset
         updates = await notifier.get_updates(offset=offset, timeout=0, allowed_updates=["message"])
         if updates:
             offset = updates[-1].update_id + 1
             for upd in updates:
                 msg = getattr(upd, "message", None)
-                if msg and msg.text and msg.text.strip().lower() == TELEGRAM_COMMAND_OVERRIDE:
-                    found = True
+                if msg and msg.text:
+                    text = msg.text.strip().lower()
+                    if text in known_commands:
+                        found.add(text)
 
     if supports_ctx:
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
@@ -452,44 +462,90 @@ def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
     state[YAML_SETTING_OVERRIDE_DATE] = None
     return True
 
-def _ingest_override_flag(args, state: dict) -> bool:
+def _handle_cancel(args, telegram_commands: set[str], state: dict, today: datetime) -> bool:
     """
-    Step 2 ingestion: read override signal from CLI or Telegram and set the persistent
-    override_flag. Idempotent: repeated signals are a no-op when the flag or override_date
-    is already set. Mutates state in place. Returns True if state changed.
+    Step 0: Check for cancel signal and apply pre-execution cancel behavior if eligible.
+
+    Eligibility: cancel acts only when override_date exists AND:
+    - override_date == today (cancels today's active override; stops execution), OR
+    - override_date >  today (disarms a future override; execution continues normally)
+
+    If eligible:
+    - Clears override_date and override_flag (prevents immediate re-arming)
+    - Returns True  when override_date == today  (caller must stop execution)
+    - Returns False when override_date >  today  (caller continues normally)
+
+    If not eligible (no override_date, or override_date already past): no-op.
+    """
+    cli_cancel = getattr(args, "cancel", False)
+    tg_cancel = TELEGRAM_COMMAND_CANCEL in telegram_commands
+
+    if not (cli_cancel or tg_cancel):
+        return False
+
+    override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+
+    # Not eligible: no override armed
+    if not override_date_str:
+        print_step(TAG_CANCEL, "cancel received but no override is armed, no-op.", True)
+        send_telegram_message("⚠️ Cancel received but no override is currently armed. No action taken.")
+        return False
+
+    try:
+        override_date_val = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        state[YAML_SETTING_OVERRIDE_DATE] = None
+        return False
+
+    today_date = today.date()
+
+    # Not eligible: override_date already in the past
+    if override_date_val < today_date:
+        print_step(TAG_CANCEL, f"cancel received but override_date {override_date_str} is already past, no-op.", True)
+        send_telegram_message(f"⚠️ Cancel received but override date {override_date_str} is already past. No action taken.")
+        return False
+
+    # Eligible — clear override state (also clears flag to prevent immediate re-arming)
+    state[YAML_SETTING_OVERRIDE_DATE] = None
+    state[YAML_SETTING_OVERRIDE_FLAG] = False
+
+    if override_date_val == today_date:
+        print_step(TAG_CANCEL, f"cancel applied: override for today ({override_date_str}) disarmed, stopping execution.", True)
+        send_telegram_message(f"🚫 Override for today ({override_date_str}) canceled. Processing stopped for this run.")
+        return True  # caller must exit without processing
+
+    # override_date > today — disarm silently and continue
+    print_step(TAG_CANCEL, f"cancel applied: override for {override_date_str} disarmed.", True)
+    send_telegram_message(f"🚫 Override for {override_date_str} canceled.")
+    return False
+
+def _ingest_override_flag(args, telegram_commands: set[str], state: dict) -> bool:
+    """
+    Step 2 ingestion: read override signal from CLI or the pre-polled Telegram commands
+    and set the persistent override_flag. Idempotent: repeated signals are a no-op when
+    the flag or override_date is already set. Mutates state in place. Returns True if
+    state changed.
     """
     override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
     override_flag = state.get(YAML_SETTING_OVERRIDE_FLAG, False)
 
-    # Capture offset before polling so we can detect changes
-    old_offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
-
-    # Ingest from CLI
     cli_override = getattr(args, "override", False)
-
-    # Ingest from Telegram (non-blocking; always run to advance the offset)
-    try:
-        tg_override = asyncio.run(_check_telegram_for_override_async(state))
-    except Exception as err:
-        print_step(TAG_OVERRIDE, f"Telegram override check failed: {err}", True)
-        tg_override = False
-
-    offset_changed = state.get(YAML_SETTING_TELEGRAM_OFFSET) != old_offset
+    tg_override = TELEGRAM_COMMAND_OVERRIDE in telegram_commands
     signal_received = cli_override or tg_override
 
     if not signal_received:
-        return offset_changed
+        return False
 
     # Idempotency: override_date already armed — ignore
     if override_date_str:
         print_step(TAG_OVERRIDE, f"override signal received but override_date already armed ({override_date_str}), ignoring.", True)
         send_telegram_message(f"⚠️ Override already armed for {override_date_str}. No action taken.")
-        return offset_changed
+        return False
 
     # Idempotency: flag already pending — ignore
     if override_flag:
         print_step(TAG_OVERRIDE, "override signal received but override_flag already pending.", True)
-        return offset_changed
+        return False
 
     state[YAML_SETTING_OVERRIDE_FLAG] = True
     print_step(TAG_OVERRIDE, "override flag set.", True)
@@ -594,6 +650,7 @@ def main():
     parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
     parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
     parser.add_argument("--override", action="store_true", help="Arm a processing override for the next skip day.")
+    parser.add_argument("--cancel", action="store_true", help="Cancel an active or pending processing override.")
     args = parser.parse_args()
 
     #region CONFIG_LOAD
@@ -639,10 +696,27 @@ def main():
     today = datetime.now()
     state_path = fs.join_paths(project_root, YAML_FILENAME_STATE)
     state = _load_state(state_path)
+
+    # Poll Telegram once per run so cancel (Step 0) and override (Step 2) share the same
+    # update stream without either consuming messages the other needs.
+    old_offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
+    try:
+        telegram_commands = asyncio.run(_poll_telegram_commands_async(state))
+    except Exception as err:
+        print_step(TAG_CANCEL, f"Telegram poll failed: {err}", True)
+        telegram_commands = set()
+    offset_changed = state.get(YAML_SETTING_TELEGRAM_OFFSET) != old_offset
+
+    # Step 0: cancel handling runs before everything else
+    should_cancel = _handle_cancel(args, telegram_commands, state, today)
+    if should_cancel:
+        _save_state(state_path, state)
+        return
+
     lifecycle_changed = _handle_override_date_lifecycle(state, today)
-    ingest_changed = _ingest_override_flag(args, state)
+    ingest_changed = _ingest_override_flag(args, telegram_commands, state)
     compute_changed = _compute_and_persist_override_date(args, state, skip_days, today)
-    if lifecycle_changed or ingest_changed or compute_changed:
+    if offset_changed or lifecycle_changed or ingest_changed or compute_changed:
         _save_state(state_path, state)
     #endregion
 
