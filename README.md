@@ -9,6 +9,8 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Works with iCloud's built-in 2FA flow.
 - Optional Telegram alerts (including morning/night summaries via Gemini AI) keep you informed even when you're away from the terminal.
 - Override/cancel control plane: arm processing on a skip day on demand via Telegram or CLI, and cancel it before it runs.
+- Cancel removes already-synced events for the targeted date (future-today or all-day scope).
+- Dry-run mode previews planned deletions and state changes without touching iCloud or persisting anything.
 
 ## Requirements
 - Python 3.12+
@@ -102,6 +104,9 @@ uv run calendar-merge --override
 
 # Cancel an active or pending override
 uv run calendar-merge --cancel
+
+# Preview what would be deleted/changed without modifying anything
+uv run calendar-merge --dry-run
 ```
 
 During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
@@ -142,10 +147,26 @@ The override stays active for the entire day and is automatically cleared after 
 
 Send `cancel` to your Telegram bot **or** pass `--cancel` on the CLI. Cancel is eligible when an `override_date` exists and is today or in the future:
 
-- **override_date == today** → override is disarmed and the current run exits without processing.
-- **override_date > today** → override is disarmed and the run continues on its normal (skip-day) schedule.
+- **override_date == today** → override is disarmed; calendar-merge events starting from now are removed (scope: **future-today**); the run exits without further processing.
+- **override_date > today** → override is disarmed; all calendar-merge events for that date are removed (scope: **all-day**); the run continues on its normal (skip-day) schedule.
+
+Only events whose title matches the `[TAG] title/source` format are removed — no collateral deletions.
 
 If no override is armed, cancel is a safe no-op.
+
+#### Dry-run mode
+
+Pass `--dry-run` to preview what the script would do without making any changes:
+
+```bash
+uv run calendar-merge --dry-run
+uv run calendar-merge --cancel --dry-run
+```
+
+In dry-run mode:
+- No events are added or deleted in iCloud.
+- No `state.json` changes are persisted.
+- Each planned deletion is printed as `[DRY-RUN] would remove '...'`.
 
 #### State file
 
