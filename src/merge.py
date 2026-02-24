@@ -467,7 +467,7 @@ def _handle_override_date_lifecycle(state: dict, today: datetime) -> bool:
     state[YAML_SETTING_OVERRIDE_DATE] = None
     return True
 
-def _handle_cancel(args, telegram_commands: set[str], state: dict, today: datetime) -> tuple[bool, bool]:
+def _handle_cancel(args, telegram_commands: set[str], state: dict, today: datetime) -> tuple[bool, bool, str | None]:
     """
     Step 0: Check for cancel signal and apply pre-execution cancel behavior if eligible.
 
@@ -477,16 +477,16 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
 
     If eligible:
     - Clears override_date and override_flag (prevents immediate re-arming)
-    - Returns (True,  True)  when override_date == today  (caller must stop; cleanup needed)
-    - Returns (False, False) when override_date >  today  (caller continues normally)
+    - Returns (True,  True,  date_str) when override_date == today  (caller must stop; cleanup today needed)
+    - Returns (False, True,  date_str) when override_date >  today  (caller continues; cleanup future date needed)
 
-    If not eligible (no override_date, or override_date already past): no-op → (False, False).
+    If not eligible (no override_date, or override_date already past): no-op → (False, False, None).
     """
     cli_cancel = getattr(args, "cancel", False)
     tg_cancel = TELEGRAM_COMMAND_CANCEL in telegram_commands
 
     if not (cli_cancel or tg_cancel):
-        return False, False
+        return False, False, None
 
     override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
 
@@ -494,13 +494,13 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     if not override_date_str:
         print_step(TAG_CANCEL, "cancel received but no override is armed, no-op.", True)
         send_telegram_message("⚠️ Cancel received but no override is currently armed. No action taken.")
-        return False, False
+        return False, False, None
 
     try:
         override_date_val = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
     except (ValueError, TypeError):
         state[YAML_SETTING_OVERRIDE_DATE] = None
-        return False, False
+        return False, False, None
 
     today_date = today.date()
 
@@ -508,7 +508,7 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     if override_date_val < today_date:
         print_step(TAG_CANCEL, f"cancel received but override_date {override_date_str} is already past, no-op.", True)
         send_telegram_message(f"⚠️ Cancel received but override date {override_date_str} is already past. No action taken.")
-        return False, False
+        return False, False, None
 
     # Eligible — clear override state (also clears flag to prevent immediate re-arming)
     state[YAML_SETTING_OVERRIDE_DATE] = None
@@ -517,12 +517,12 @@ def _handle_cancel(args, telegram_commands: set[str], state: dict, today: dateti
     if override_date_val == today_date:
         print_step(TAG_CANCEL, f"cancel applied: override for today ({override_date_str}) disarmed, stopping execution.", True)
         send_telegram_message(f"🚫 Override for today ({override_date_str}) canceled. Processing stopped for this run.")
-        return True, True  # caller must exit; future today events must be removed
+        return True, True, override_date_str  # caller must exit; future today events must be removed
 
-    # override_date > today — disarm silently and continue
+    # override_date > today — disarm and signal caller to remove all events for that date
     print_step(TAG_CANCEL, f"cancel applied: override for {override_date_str} disarmed.", True)
     send_telegram_message(f"🚫 Override for {override_date_str} canceled.")
-    return False, False
+    return False, True, override_date_str  # caller continues; all synced events for override_date must be removed
 
 def _ingest_override_flag(args, telegram_commands: set[str], state: dict) -> bool:
     """
@@ -756,7 +756,7 @@ def main():
     offset_changed = state.get(YAML_SETTING_TELEGRAM_OFFSET) != old_offset
 
     # Step 0: cancel handling runs before everything else
-    should_cancel, cancel_needs_cleanup = _handle_cancel(args, telegram_commands, state, today)
+    should_cancel, cancel_needs_cleanup, cancel_cleanup_date = _handle_cancel(args, telegram_commands, state, today)
     if should_cancel:
         _save_state(state_path, state)
         if cancel_needs_cleanup:
@@ -778,6 +778,27 @@ def main():
                 print_step(TAG_CANCEL, f"failed to remove events: {err}", True)
                 send_telegram_message(f"⚠️ Cancel cleanup failed: {err}")
         return
+
+    if cancel_needs_cleanup and cancel_cleanup_date:
+        _save_state(state_path, state)
+        print_step(TAG_CANCEL, f"removing all synced events for {cancel_cleanup_date}...", False)
+        try:
+            icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
+            if not validate_2fa(icloud_service):
+                raise RuntimeError("2FA validation failed")
+            calendar_service = icloud_service.calendar
+            cleanup_dt = datetime.strptime(cancel_cleanup_date, "%Y-%m-%d")
+            cleanup_start = datetime(cleanup_dt.year, cleanup_dt.month, cleanup_dt.day, 0, 0, 0)
+            all_cleanup_events = calendar_service.get_events(from_dt=cleanup_start, to_dt=_end_of_day(cleanup_dt))
+            icloud_events_cleanup = _collect_icloud_events(all_cleanup_events, [])
+            removed = remove_synced_events(cleanup_dt, RemoveMode.ALL_DAY, icloud_events_cleanup, calendar_service, datetime.now(timezone.utc))
+            term.print_done()
+            print_step(TAG_CANCEL, f"removed {removed} event(s) for {cancel_cleanup_date}.", True)
+            send_telegram_message(f"🗑️ Removed {removed} event(s) for {cancel_cleanup_date} after cancel.")
+        except Exception as err:
+            term.print_failed()
+            print_step(TAG_CANCEL, f"failed to remove events for {cancel_cleanup_date}: {err}", True)
+            send_telegram_message(f"⚠️ Cancel cleanup failed for {cancel_cleanup_date}: {err}")
 
     lifecycle_changed = _handle_override_date_lifecycle(state, today)
     ingest_changed = _ingest_override_flag(args, telegram_commands, state)
