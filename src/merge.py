@@ -60,6 +60,7 @@ ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
 
 YAML_FILENAME_STATE = "state.json"
 YAML_SECTION_STATE = "state"
+YAML_SETTING_OVERRIDE_FLAG = "override_flag"
 YAML_SETTING_OVERRIDE_DATE = "override_date"
 YAML_SETTING_TELEGRAM_OFFSET = "telegram_offset"
 TELEGRAM_COMMAND_OVERRIDE = "override"
@@ -341,12 +342,13 @@ def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
 
 def _load_state(state_path: str) -> dict:
     """Load persisted override state or return defaults."""
-    defaults: dict = {YAML_SETTING_OVERRIDE_DATE: None, YAML_SETTING_TELEGRAM_OFFSET: None}
+    defaults: dict = {YAML_SETTING_OVERRIDE_FLAG: False, YAML_SETTING_OVERRIDE_DATE: None, YAML_SETTING_TELEGRAM_OFFSET: None}
     try:
         with open(state_path, "r") as f:
             data = json.load(f)
         section = data.get(YAML_SECTION_STATE) or {}
         return {
+            YAML_SETTING_OVERRIDE_FLAG: bool(section.get(YAML_SETTING_OVERRIDE_FLAG, False)),
             YAML_SETTING_OVERRIDE_DATE: section.get(YAML_SETTING_OVERRIDE_DATE),
             YAML_SETTING_TELEGRAM_OFFSET: section.get(YAML_SETTING_TELEGRAM_OFFSET),
         }
@@ -431,13 +433,14 @@ def _clear_stale_override(state: dict, today: datetime) -> bool:
         return True
     return False
 
-def _ingest_and_arm_override(args, state: dict, skip_days: list[str], today: datetime) -> bool:
+def _ingest_override_flag(args, state: dict) -> bool:
     """
-    Step 2: Read override signal from CLI or Telegram and arm override_date if none exists.
-    Idempotent: a repeated signal when override_date is already set is a no-op.
-    Mutates state in place. Returns True if state changed.
+    Step 2 ingestion: read override signal from CLI or Telegram and set the persistent
+    override_flag. Idempotent: repeated signals are a no-op when the flag or override_date
+    is already set. Mutates state in place. Returns True if state changed.
     """
     override_date_str = state.get(YAML_SETTING_OVERRIDE_DATE)
+    override_flag = state.get(YAML_SETTING_OVERRIDE_FLAG, False)
 
     # Capture offset before polling so we can detect changes
     old_offset = state.get(YAML_SETTING_TELEGRAM_OFFSET)
@@ -458,28 +461,55 @@ def _ingest_and_arm_override(args, state: dict, skip_days: list[str], today: dat
     if not signal_received:
         return offset_changed
 
-    # Idempotency: if override_date already exists, ignore the new signal
+    # Idempotency: override_date already armed — ignore
     if override_date_str:
         print_step(TAG_OVERRIDE, f"override signal received but override_date already armed ({override_date_str}), ignoring.", True)
         send_telegram_message(f"⚠️ Override already armed for {override_date_str}. No action taken.")
         return offset_changed
 
-    # Step 2A: --first on a skip day → arm for today
+    # Idempotency: flag already pending — ignore
+    if override_flag:
+        print_step(TAG_OVERRIDE, "override signal received but override_flag already pending.", True)
+        return offset_changed
+
+    state[YAML_SETTING_OVERRIDE_FLAG] = True
+    print_step(TAG_OVERRIDE, "override flag set.", True)
+    return True
+
+def _compute_and_persist_override_date(args, state: dict, skip_days: list[str], today: datetime) -> bool:
+    """
+    Step 2 computation: when override_flag is set and no override_date exists, compute and
+    persist override_date then clear the flag.
+    - If --first AND today is a skip day  => override_date = today
+    - Otherwise                           => override_date = next_skip_day
+    Returns True if state changed.
+    """
+    if not state.get(YAML_SETTING_OVERRIDE_FLAG, False):
+        return False
+
+    # Guard: flag set but date already present (shouldn't normally occur — clear flag and exit)
+    if state.get(YAML_SETTING_OVERRIDE_DATE):
+        state[YAML_SETTING_OVERRIDE_FLAG] = False
+        return True
+
     is_first = getattr(args, "first", False)
     if is_first and is_skip_day(today, skip_days):
         new_date = today.strftime("%Y-%m-%d")
         state[YAML_SETTING_OVERRIDE_DATE] = new_date
+        state[YAML_SETTING_OVERRIDE_FLAG] = False
         print_step(TAG_OVERRIDE, f"override armed for today ({new_date}).", True)
         send_telegram_message(f"✅ Override armed: processing enabled for today ({new_date}).")
         return True
 
-    # Step 2B: any other case → arm for next skip day
     next_skip = _next_skip_day(today, skip_days)
     if next_skip is None:
         print_step(TAG_OVERRIDE, "no skip days configured, override has no effect.", True)
-        return offset_changed
+        state[YAML_SETTING_OVERRIDE_FLAG] = False
+        return True
+
     new_date = next_skip.strftime("%Y-%m-%d")
     state[YAML_SETTING_OVERRIDE_DATE] = new_date
+    state[YAML_SETTING_OVERRIDE_FLAG] = False
     print_step(TAG_OVERRIDE, f"override armed for next skip day ({new_date}).", True)
     send_telegram_message(f"✅ Override armed: processing will be enabled on {new_date}.")
     return True
@@ -591,8 +621,9 @@ def main():
     state_path = fs.join_paths(project_root, YAML_FILENAME_STATE)
     state = _load_state(state_path)
     step1c_changed = _clear_stale_override(state, today)
-    step2_changed = _ingest_and_arm_override(args, state, skip_days, today)
-    if step1c_changed or step2_changed:
+    ingest_changed = _ingest_override_flag(args, state)
+    compute_changed = _compute_and_persist_override_date(args, state, skip_days, today)
+    if step1c_changed or ingest_changed or compute_changed:
         _save_state(state_path, state)
     #endregion
 
