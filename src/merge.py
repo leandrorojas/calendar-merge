@@ -1,5 +1,6 @@
 # imports
 import os
+import re
 import json
 import click
 import argparse
@@ -78,6 +79,10 @@ class EventAction(Enum):
     none = 0
     add = 1
     delete = 2
+
+class RemoveMode(Enum):
+    FUTURE_TODAY = "future_today"
+    ALL_DAY = "all_day"
 
 @dataclass
 class MergeEvent(object):
@@ -618,6 +623,49 @@ def _consume_override_on_last(state: dict, today: datetime, state_path: str) -> 
         _save_state(state_path, state)
         print_step(TAG_OVERRIDE, f"override consumed for {override_date_str} (last run of day).", True)
         send_telegram_message(f"✅ Override for {override_date_str} consumed. Normal schedule resumes tomorrow.")
+
+_MANAGED_TITLE_RE = re.compile(r"^\[.+\] .+/.+$")
+
+def _is_managed_event(title: str) -> bool:
+    """Return True if the title matches the calendar-merge format: [TAG] title/source."""
+    return bool(_MANAGED_TITLE_RE.match(title or ""))
+
+def remove_synced_events(
+    target_date: datetime,
+    mode: RemoveMode,
+    icloud_events: list[MergeEvent],
+    calendar_service,
+    now: datetime,
+) -> int:
+    """
+    Delete calendar-merge-managed events for target_date according to mode.
+    - FUTURE_TODAY: managed events on target_date whose start >= now
+    - ALL_DAY:      all managed events on target_date
+    Returns the count of deleted events. Only touches events whose title matches
+    the [TAG] title/source format — no collateral deletions.
+    """
+    now_utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    removed = 0
+
+    for event in icloud_events:
+        if not _is_managed_event(event.title):
+            continue
+        if event.start.date() != target_date.date():
+            continue
+        if mode == RemoveMode.FUTURE_TODAY and event.start < now_utc:
+            continue
+        remove_obj = EventObject(
+            pguid=event.full_event["pGuid"],
+            guid=event.full_event["guid"],
+            title=event.title,
+        )
+        try:
+            calendar_service.remove_event(remove_obj)
+            removed += 1
+        except Exception as err:
+            print_step(TAG_CANCEL, f"failed to remove event '{event.title}': {err}", True)
+
+    return removed
 
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
