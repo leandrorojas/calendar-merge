@@ -160,7 +160,7 @@ def get_datetime(dt:datetime) -> datetime:
 def get_from_list(items:list, value:str):
     try:
         return_value = items.get(value)
-    except:
+    except Exception:
         return_value = None
 
     return return_value
