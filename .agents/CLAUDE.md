@@ -86,7 +86,7 @@ The entire application lives in a single file: `src/merge.py` (entry point: `mai
 
 - `pyicloud` (pinned 2.1.0) — iCloud API access and calendar operations
 - `icalendar` — ICS file parsing
-- `pyfangs` (git dep, pinned v0.7.2) — custom utility library providing `YamlHelper`, `FileSystem`, `GeminiAI`, `TelegramNotifier`, terminal colors, and `convert_to_utc`
+- `pyfangs` (custom git dep, pinned to v0.7.2 via `[tool.uv.sources]`) — custom utility library providing `YamlHelper`, `FileSystem`, `GeminiAI`, `TelegramNotifier`, terminal colors, and `convert_to_utc`
 - `google-generativeai` — Gemini AI for generating notification messages
 - `dotenv` — environment variable loading
 

@@ -61,7 +61,7 @@ Merged events use the exact format `[tag] title/source` (e.g., `[WRK] Team Calen
 
 - `pyicloud` (pinned 2.1.0) — iCloud API and calendar operations
 - `icalendar` — ICS file parsing
-- `pyfangs` (custom git dep, pinned v0.7.2) — provides `YamlHelper`, `FileSystem`, `GeminiAI`, `TelegramNotifier`, `convert_to_utc`, and terminal color helpers. Not on PyPI.
+- `pyfangs` (custom git dep, pinned to v0.7.2 via `[tool.uv.sources]`) — provides `YamlHelper`, `FileSystem`, `GeminiAI`, `TelegramNotifier`, `convert_to_utc`, and terminal color helpers. Not on PyPI.
 - `google-generativeai` — Gemini AI for notification messages
 - `dotenv` — environment variable loading
 

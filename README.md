@@ -47,14 +47,14 @@ Add one entry per calendar feed.
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
 - `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications (optional, required if you want Telegram alerts).
-- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional). If it’s missing, run `python scripts/telegram_sandbox.py` to infer it automatically.
+- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional).
 - `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
-- `config.future_events_days`: Number of days ahead to pull events (e.g., `5` fetches the next five days).
+- `config.future_events_days`: Number of non-skipped days ahead to pull events (e.g., `5` fetches the next five days that are not in `skip_days`).
 - `config.ai_tone`: Optional text describing how Gemini AI should shape its responses (e.g., `"friendly"`, `"concise/professional"`). Use an empty string to leave Gemini’s default tone.
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
@@ -118,10 +118,7 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
 - Add `--last` to send an “end of day” notification.
 - Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.
-- To validate your Telegram configuration and automatically capture the chat id, run:
-  ```bash
-  uv run python scripts/telegram_sandbox.py
-  ```
+- To validate your Telegram configuration, send a test message to your bot and confirm it arrives.
 
 ### Override / cancel control plane
 
