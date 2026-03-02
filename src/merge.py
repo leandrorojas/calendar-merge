@@ -676,6 +676,22 @@ def remove_synced_events(
 
     return removed
 
+def _cancel_cleanup(date_str: str, mode: RemoveMode, dry_run: bool = False) -> int:
+    """Authenticate to iCloud and remove managed events for the given date.
+
+    Returns the number of events removed (or candidates in dry-run mode).
+    Raises RuntimeError on auth or fetch failures.
+    """
+    icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
+    if not validate_2fa(icloud_service):
+        raise RuntimeError("2FA validation failed")
+    calendar_service = icloud_service.calendar
+    cleanup_dt = datetime.strptime(date_str, "%Y-%m-%d")
+    cleanup_start = datetime(cleanup_dt.year, cleanup_dt.month, cleanup_dt.day, 0, 0, 0)
+    all_events = calendar_service.get_events(from_dt=cleanup_start, to_dt=_end_of_day(cleanup_dt))
+    icloud_events = _collect_icloud_events(all_events, [])
+    return remove_synced_events(cleanup_dt, mode, icloud_events, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
+
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
     for raw_event in raw_events:
@@ -776,14 +792,7 @@ def main():
         if cancel_needs_cleanup:
             print_step(TAG_CANCEL, "removing future events for today...", False)
             try:
-                icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
-                if not validate_2fa(icloud_service):
-                    raise RuntimeError("2FA validation failed")
-                calendar_service = icloud_service.calendar
-                today_start = datetime(today.year, today.month, today.day, 0, 0, 0)
-                all_today_events = calendar_service.get_events(from_dt=today_start, to_dt=_end_of_day(today))
-                icloud_events_today = _collect_icloud_events(all_today_events, [])
-                removed = remove_synced_events(today, RemoveMode.FUTURE_TODAY, icloud_events_today, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
+                removed = _cancel_cleanup(cancel_cleanup_date, RemoveMode.FUTURE_TODAY, dry_run=dry_run)
                 term.print_done()
                 print_step(TAG_CANCEL, f"removed {removed} future event(s) for today (scope: future-today).", True)
                 if not dry_run:
@@ -800,15 +809,7 @@ def main():
             _save_state(state_path, state)
         print_step(TAG_CANCEL, f"removing all synced events for {cancel_cleanup_date}...", False)
         try:
-            icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
-            if not validate_2fa(icloud_service):
-                raise RuntimeError("2FA validation failed")
-            calendar_service = icloud_service.calendar
-            cleanup_dt = datetime.strptime(cancel_cleanup_date, "%Y-%m-%d")
-            cleanup_start = datetime(cleanup_dt.year, cleanup_dt.month, cleanup_dt.day, 0, 0, 0)
-            all_cleanup_events = calendar_service.get_events(from_dt=cleanup_start, to_dt=_end_of_day(cleanup_dt))
-            icloud_events_cleanup = _collect_icloud_events(all_cleanup_events, [])
-            removed = remove_synced_events(cleanup_dt, RemoveMode.ALL_DAY, icloud_events_cleanup, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
+            removed = _cancel_cleanup(cancel_cleanup_date, RemoveMode.ALL_DAY, dry_run=dry_run)
             term.print_done()
             print_step(TAG_CANCEL, f"removed {removed} event(s) for {cancel_cleanup_date} (scope: all-day).", True)
             if not dry_run:
