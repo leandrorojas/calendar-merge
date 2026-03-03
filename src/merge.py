@@ -770,7 +770,7 @@ def main():
     #endregion
 
     #region OVERRIDE_HANDLING
-    today = datetime.now()
+    today = datetime.now().astimezone()
     state_path = fs.join_paths(project_root, JSON_FILENAME_STATE)
     state = _load_state(state_path)
 
@@ -866,7 +866,7 @@ def main():
             term.print_failed()
             raise RuntimeError("No calendar GUID available")
 
-        filter_start = datetime.today()
+        filter_start = datetime.now().astimezone()
         filter_end = _calculate_future_date(filter_start, future_event_days, skip_days)
 
         try:
@@ -877,7 +877,7 @@ def main():
 
         icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
 
-        now = datetime.now()
+        now = datetime.now().astimezone()
         today_bod = datetime(now.year, now.month, now.day, 0, 0, 0)
         cut_off_date = _end_of_day(_calculate_future_date(now, future_event_days, skip_days))
 
