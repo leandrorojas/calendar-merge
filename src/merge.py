@@ -12,7 +12,7 @@ import asyncio
 from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
 from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
@@ -688,7 +688,7 @@ def _cancel_cleanup(date_str: str, mode: RemoveMode, dry_run: bool = False) -> i
     icloud_events = _collect_icloud_events(all_events, [])
     return remove_synced_events(cleanup_dt, mode, icloud_events, calendar_service, datetime.now(timezone.utc), dry_run=dry_run)
 
-def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
+def _collect_icloud_events(raw_events:list, skip_days:list[str], override_date:date|None=None) -> list[MergeEvent]:
     events:list[MergeEvent] = []
     for raw_event in raw_events:
         all_day:bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
@@ -706,7 +706,8 @@ def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEv
         tzinfo = ZoneInfo(tzinfo)
         start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
         if str(start_datetime.weekday()) in skip_days:
-            continue
+            if not (override_date and start_datetime.date() == override_date):
+                continue
 
         event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
         events.append(MergeEvent(event_title, start_datetime, event_end_datetime, raw_event, None))
@@ -862,6 +863,14 @@ def main():
             term.print_failed()
             raise RuntimeError("No calendar GUID available")
 
+        override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
+        override_date = None
+        if override_date_str:
+            try:
+                override_date = datetime.strptime(str(override_date_str), "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                pass
+
         filter_start = datetime.now().astimezone()
         filter_end = _calculate_future_date(filter_start, future_event_days, skip_days)
 
@@ -871,7 +880,7 @@ def main():
             term.print_failed()
             raise RuntimeError("Unable to load events from iCloud") from err
 
-        icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
+        icloud_events = _collect_icloud_events(all_icloud_events, skip_days, override_date)
 
         now = datetime.now().astimezone()
         today_bod = datetime(now.year, now.month, now.day, 0, 0, 0)
@@ -944,7 +953,8 @@ def main():
                 start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
 
                 if str(start_datetime.weekday()) in skip_days:
-                    continue
+                    if not (override_date and start_datetime.date() == override_date):
+                        continue
 
                 if not (utc_today_bod <= start_datetime <= utc_cut_off_date):
                     continue
