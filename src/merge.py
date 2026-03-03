@@ -66,6 +66,7 @@ JSON_SETTING_TELEGRAM_OFFSET = "telegram_offset"
 TELEGRAM_COMMAND_OVERRIDE = "override"
 TELEGRAM_COMMAND_CANCEL = "cancel"
 TELEGRAM_COMMAND_STATUS = "status"
+TELEGRAM_COMMAND_DEBUG = "debug"
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
@@ -74,6 +75,8 @@ TAG_OVERRIDE = term.TerminalColors.yellow.value + "override" + term.TerminalColo
 TAG_CANCEL = term.TerminalColors.orange.value + "cancel" + term.TerminalColors.reset.value
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 #endregion
+
+WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 class EventAction(Enum):
     none = 0
@@ -397,6 +400,27 @@ def _build_status_message(state: dict, today: datetime, skip_days: list[str]) ->
     line2 = f"Next skip day: {next_skip.strftime('%Y-%m-%d')}" if next_skip else "Next skip day: none configured"
     return f"{line1}\n{line2}"
 
+def _build_debug_message(state: dict, today: datetime, skip_days: list[str], future_event_days: int) -> str:
+    skip_today = is_skip_day(today, skip_days)
+    will_process = _should_process(state, today, skip_days)
+    skip_names = ", ".join(WEEKDAY_NAMES[int(d)] for d in sorted(skip_days)) if skip_days else "none"
+    override_date = state.get(JSON_SETTING_OVERRIDE_DATE) or "none"
+    override_flag = state.get(JSON_SETTING_OVERRIDE_FLAG, False)
+    next_skip = _next_skip_day(today, skip_days)
+    next_skip_str = next_skip.strftime("%Y-%m-%d") if next_skip else "none"
+    tg_offset = state.get(JSON_SETTING_TELEGRAM_OFFSET, "none")
+
+    return "\n".join([
+        f"Skip day: {'yes' if skip_today else 'no'}",
+        f"Will process: {'yes' if will_process else 'no'}",
+        f"Skip days: {skip_names}",
+        f"Override date: {override_date}",
+        f"Override flag: {override_flag}",
+        f"Lookahead: {future_event_days} days",
+        f"Next skip day: {next_skip_str}",
+        f"TG offset: {tg_offset}",
+    ])
+
 async def _poll_telegram_commands_async(state: dict) -> set[str]:
     """
     Non-blocking poll for pending Telegram messages. Returns the set of known command
@@ -410,7 +434,7 @@ async def _poll_telegram_commands_async(state: dict) -> set[str]:
 
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     offset = state.get(JSON_SETTING_TELEGRAM_OFFSET)
-    known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL, TELEGRAM_COMMAND_STATUS}
+    known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL, TELEGRAM_COMMAND_STATUS, TELEGRAM_COMMAND_DEBUG}
     found: set[str] = set()
 
     notifier_factory = tg.TelegramNotifier
@@ -843,6 +867,9 @@ def main():
 
     if TELEGRAM_COMMAND_STATUS in telegram_commands:
         send_telegram_message(_build_status_message(state, today, skip_days))
+
+    if TELEGRAM_COMMAND_DEBUG in telegram_commands:
+        send_telegram_message(_build_debug_message(state, today, skip_days, future_event_days))
 
     should_process = _should_process(state, today, skip_days)
     if not should_process:
