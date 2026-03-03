@@ -113,6 +113,10 @@ Merged events in iCloud use the format: `[tag] title/source` (e.g., `[WRK] Team 
 
 Do not use `YAML_` prefixes for JSON state fields, and vice versa.
 
+## Git Workflow
+
+- Always create a new branch for any set of encompassing changes. Do not commit directly to `main`.
+
 ## Validation
 
 - Run basic sync path: `uv run calendar-merge`
