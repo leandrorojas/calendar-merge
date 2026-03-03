@@ -153,7 +153,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
     return status
 
-def get_from_list(items:list, value:str):
+def get_from_list(items:dict, value:str):
     try:
         return_value = items.get(value)
     except Exception:
