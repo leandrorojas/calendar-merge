@@ -2,7 +2,7 @@ import sys
 import os
 import unittest
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -12,6 +12,8 @@ from merge import (
     _handle_override_date_lifecycle,
     _consume_override_on_last,
     _handle_cancel,
+    _end_of_day,
+    _calculate_future_date,
     JSON_SETTING_OVERRIDE_FLAG,
     JSON_SETTING_OVERRIDE_DATE,
     JSON_SETTING_TELEGRAM_OFFSET,
@@ -211,6 +213,41 @@ class TestHandleCancel(unittest.TestCase):
         with patch("merge.send_telegram_message"):
             _handle_cancel(_args(cancel=True), {"cancel"}, state, MONDAY)
         self.assertFalse(state[JSON_SETTING_OVERRIDE_FLAG])
+
+
+# ── Date boundaries (timezone-aware correctness) ─────────────────────────────
+
+class TestDateBoundaries(unittest.TestCase):
+    """Verify that aware datetimes propagate tzinfo through helpers."""
+
+    # A non-UTC timezone: UTC+5
+    TZ_PLUS5 = timezone(timedelta(hours=5))
+
+    def test_today_bod_from_aware_datetime_retains_tzinfo(self):
+        now = datetime(2025, 6, 15, 14, 30, 0, tzinfo=self.TZ_PLUS5)
+        today_bod = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=now.tzinfo)
+        self.assertEqual(today_bod.tzinfo, self.TZ_PLUS5)
+        self.assertEqual(today_bod.hour, 0)
+
+    def test_aware_midnight_converts_to_non_midnight_utc(self):
+        """Midnight in UTC+5 is 19:00 previous day in UTC."""
+        midnight_plus5 = datetime(2025, 6, 15, 0, 0, 0, tzinfo=self.TZ_PLUS5)
+        utc_equivalent = midnight_plus5.astimezone(timezone.utc)
+        self.assertNotEqual(utc_equivalent.hour, 0)
+        self.assertEqual(utc_equivalent.hour, 19)
+        self.assertEqual(utc_equivalent.day, 14)
+
+    def test_end_of_day_preserves_tzinfo(self):
+        dt = datetime(2025, 6, 15, 10, 0, 0, tzinfo=self.TZ_PLUS5)
+        eod = _end_of_day(dt)
+        self.assertEqual(eod.tzinfo, self.TZ_PLUS5)
+        self.assertEqual(eod.hour, 23)
+        self.assertEqual(eod.minute, 59)
+
+    def test_calculate_future_date_preserves_tzinfo(self):
+        start = datetime(2025, 6, 15, 10, 0, 0, tzinfo=self.TZ_PLUS5)
+        result = _calculate_future_date(start, 3, [])
+        self.assertEqual(result.tzinfo, self.TZ_PLUS5)
 
 
 if __name__ == "__main__":
