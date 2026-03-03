@@ -696,7 +696,7 @@ def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEv
     events:list[MergeEvent] = []
     for raw_event in raw_events:
         all_day:bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
-        if all_day is None or all_day:
+        if all_day:
             continue
 
         start_datetime = get_from_list(raw_event, ICLOUD_FIELD_START_DATE)
@@ -1025,8 +1025,6 @@ def main():
 
     if args.last:
         _consume_override_on_last(state, today, state_path, dry_run=dry_run)
-
-    if args.last:
         send_ai_telegram_message(
             ai_client,
             "Write a end of day wrap-up message, different every time. One-liner only.",
