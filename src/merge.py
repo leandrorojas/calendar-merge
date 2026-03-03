@@ -65,6 +65,7 @@ JSON_SETTING_OVERRIDE_DATE = "override_date"
 JSON_SETTING_TELEGRAM_OFFSET = "telegram_offset"
 TELEGRAM_COMMAND_OVERRIDE = "override"
 TELEGRAM_COMMAND_CANCEL = "cancel"
+TELEGRAM_COMMAND_STATUS = "status"
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
@@ -380,6 +381,22 @@ def _next_skip_day(from_date: datetime, skip_days: list[str]) -> datetime | None
         candidate += timedelta(days=1)
     return None
 
+def _build_status_message(state: dict, today: datetime, skip_days: list[str]) -> str:
+    override_date_str = state.get(JSON_SETTING_OVERRIDE_DATE)
+    if override_date_str:
+        line1 = f"Override: armed for {override_date_str}"
+        try:
+            override_dt = datetime.strptime(str(override_date_str), "%Y-%m-%d")
+            next_skip = _next_skip_day(override_dt, skip_days)
+        except (ValueError, TypeError):
+            next_skip = _next_skip_day(today, skip_days)
+    else:
+        line1 = "Override: not armed"
+        next_skip = _next_skip_day(today, skip_days)
+
+    line2 = f"Next skip day: {next_skip.strftime('%Y-%m-%d')}" if next_skip else "Next skip day: none configured"
+    return f"{line1}\n{line2}"
+
 async def _poll_telegram_commands_async(state: dict) -> set[str]:
     """
     Non-blocking poll for pending Telegram messages. Returns the set of known command
@@ -393,7 +410,7 @@ async def _poll_telegram_commands_async(state: dict) -> set[str]:
 
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     offset = state.get(JSON_SETTING_TELEGRAM_OFFSET)
-    known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL}
+    known_commands = {TELEGRAM_COMMAND_OVERRIDE, TELEGRAM_COMMAND_CANCEL, TELEGRAM_COMMAND_STATUS}
     found: set[str] = set()
 
     notifier_factory = tg.TelegramNotifier
@@ -823,6 +840,9 @@ def main():
     if not dry_run and (offset_changed or lifecycle_changed or ingest_changed or compute_changed):
         _save_state(state_path, state)
     #endregion
+
+    if TELEGRAM_COMMAND_STATUS in telegram_commands:
+        send_telegram_message(_build_status_message(state, today, skip_days))
 
     should_process = _should_process(state, today, skip_days)
     if not should_process:
