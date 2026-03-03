@@ -12,13 +12,12 @@ import asyncio
 from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
 from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from enum import Enum
 from icalendar import Calendar
 from time import perf_counter
-import google.generativeai as genai
 
 # custom imports
 from pyfangs.yaml import YamlHelper
@@ -153,9 +152,6 @@ def validate_2fa(api: PyiCloudService) -> bool:
             status = False
 
     return status
-
-def get_datetime(dt:datetime) -> datetime:
-    return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
 def get_from_list(items:list, value:str):
     try:
