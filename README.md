@@ -44,14 +44,14 @@ Add one entry per calendar feed.
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
 - `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications (optional, required if you want Telegram alerts).
-- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional).
+- `TELEGRAM_CHAT_ID`: Destination chat/channel id. Required whenever `TELEGRAM_BOT_API_TOKEN` is set. To obtain it, send any message to your bot, then call `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and look for `"chat":{"id": ...}` in the response.
 - `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
-- `config.future_events_days`: Number of non-skipped days ahead to include. The calendar advances day by day, counting only days not in `skip_days` (e.g., with `skip_days: 5, 6` and `future_events_days: 5`, the window covers seven calendar days because weekends are skipped).
+- `config.future_events_days`: Number of non-skipped days ahead to include. `_calculate_future_date()` walks forward from the current date, counting only days not in `skip_days`, so the actual calendar span depends on which day the script runs. For example, with `skip_days: 5, 6` and `future_events_days: 5`: starting on a Monday the window is 5 calendar days (Mon→Fri), but starting on a Wednesday it spans 7 calendar days (Wed→next Tue, skipping Sat and Sun).
 - `config.ai_tone`: Optional text describing how Gemini AI should shape its responses (e.g., `"friendly"`, `"concise/professional"`). Use an empty string to leave Gemini’s default tone.
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
@@ -106,7 +106,7 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
 - Add `--last` to send an “end of day” notification.
 - Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.
-- To validate your Telegram configuration and automatically capture the chat id, send a message to your bot and verify the `TELEGRAM_CHAT_ID` matches.
+- To validate your Telegram setup, send a test message to the bot and confirm the script can deliver notifications to the configured `TELEGRAM_CHAT_ID`.
 
 ## Notes
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
