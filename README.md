@@ -39,6 +39,7 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 ## Configuration
 
 ### `.env`
+
 Add one entry per calendar feed.
 
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
@@ -48,6 +49,7 @@ Add one entry per calendar feed.
 - `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
+
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
@@ -100,9 +102,11 @@ uv run calendar-merge --last
 During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
 
 ### Scheduling
+
 To keep your calendars in sync automatically, hook the command into your scheduler of choice (e.g., `cron`, launchd, Windows Task Scheduler). Make sure the job runs under a user session that has the required iCloud authentication.
 
 #### Telegram / AI summaries
+
 - Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
 - Add `--last` to send an “end of day” notification.
 - Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.

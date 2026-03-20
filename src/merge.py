@@ -226,6 +226,10 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
         return
 
+    if not chat_id:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
+        return
+
     notifier_factory = tg.TelegramNotifier
     supports_ctx = hasattr(notifier_factory, "__aenter__")
 
@@ -260,6 +264,10 @@ async def _wait_for_telegram_reply(prompt: str) -> str | None:
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        return None
+
+    if not chat_id:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
         return None
 
     notifier_factory = tg.TelegramNotifier
