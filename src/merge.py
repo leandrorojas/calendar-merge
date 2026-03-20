@@ -226,6 +226,10 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
         return
 
+    if not chat_id:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
+        return
+
     notifier_factory = tg.TelegramNotifier
     supports_ctx = hasattr(notifier_factory, "__aenter__")
 
@@ -260,6 +264,10 @@ async def _wait_for_telegram_reply(prompt: str) -> str | None:
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
         term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        return None
+
+    if not chat_id:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
         return None
 
     notifier_factory = tg.TelegramNotifier
@@ -548,11 +556,13 @@ def main():
 
             for icloud_event in filtered_icloud_events:
                 event_time = (icloud_event.start, icloud_event.end)
-                matching_events = source_event_map.get(event_time, [])
-                event_action = EventAction.none if matching_events else EventAction.delete
-                icloud_event.action = event_action
-                for source_event in matching_events:
-                    source_event.action = event_action
+                bucket = source_event_map.get(event_time, [])
+                if bucket:
+                    matched = bucket.pop(0)
+                    matched.action = EventAction.none
+                    icloud_event.action = EventAction.none
+                else:
+                    icloud_event.action = EventAction.delete
                 merge_events.append(icloud_event)
 
             events_to_add = [event for event in source_calendar_events if event.action is None]
