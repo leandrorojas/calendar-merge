@@ -8,9 +8,6 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Tags each imported event so you can trace the original source.
 - Works with iCloud's built-in 2FA flow.
 - Optional Telegram alerts (including morning/night summaries via Gemini AI) keep you informed even when you're away from the terminal.
-- Override/cancel control plane: arm processing on a skip day on demand via Telegram or CLI, and cancel it before it runs.
-- Cancel removes already-synced events for the targeted date (future-today or all-day scope).
-- Dry-run mode previews planned deletions and state changes without touching iCloud or persisting anything.
 
 ## Requirements
 - Python 3.12+
@@ -47,14 +44,14 @@ Add one entry per calendar feed.
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
 - `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications (optional, required if you want Telegram alerts).
-- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional).
+- `TELEGRAM_CHAT_ID`: Destination chat/channel id (optional). If it’s missing, run `python scripts/telegram_sandbox.py` to infer it automatically.
 - `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
-- `config.future_events_days`: Number of non-skipped days ahead to pull events (e.g., `5` fetches the next five days that are not in `skip_days`).
+- `config.future_events_days`: Number of days ahead to pull events (e.g., `5` fetches the next five days).
 - `config.ai_tone`: Optional text describing how Gemini AI should shape its responses (e.g., `"friendly"`, `"concise/professional"`). Use an empty string to leave Gemini’s default tone.
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
@@ -93,20 +90,11 @@ uv run calendar-merge
 Add the optional flags when you want Telegram updates:
 
 ```bash
-# Morning sync + AI/Telegram “good morning”
+# Morning sync + AI/Telegram "good morning"
 uv run calendar-merge --first
 
 # Evening sync + AI/Telegram wrap-up
 uv run calendar-merge --last
-
-# Arm a processing override for the next skip day
-uv run calendar-merge --override
-
-# Cancel an active or pending override
-uv run calendar-merge --cancel
-
-# Preview what would be deleted/changed without modifying anything
-uv run calendar-merge --dry-run
 ```
 
 During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
@@ -118,56 +106,10 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
 - Add `--last` to send an “end of day” notification.
 - Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.
-- To validate your Telegram configuration, send a test message to your bot and confirm it arrives.
-
-### Override / cancel control plane
-
-By default the script skips processing on any day listed in `config.skip_days`. The override/cancel control plane lets you change this on demand without touching the config.
-
-| Concept | Description |
-|---|---|
-| **skip day** | A day in `config.skip_days` where processing is normally disabled. |
-| **override** | Arms processing for one skip day (the whole day, all cron runs). |
-| **override_date** | The date (`YYYY-MM-DD`) stored in `state.json` while an override is active. |
-| **cancel** | Disarms an active or pending override before it is consumed. |
-
-#### Arming an override
-
-Send `override` (exact, case-insensitive) to your Telegram bot **or** pass `--override` on the CLI. The next cron run picks it up and arms the override:
-
-- If it is the **first run of the day** (`--first`) **and today is a skip day** → override is armed for **today**.
-- Otherwise → override is armed for the **next upcoming skip day**.
-
-The override stays active for the entire day and is automatically cleared after the last run (`--last`).
-
-#### Canceling an override
-
-Send `cancel` to your Telegram bot **or** pass `--cancel` on the CLI. Cancel is eligible when an `override_date` exists and is today or in the future:
-
-- **override_date == today** → override is disarmed; calendar-merge events starting from now are removed (scope: **future-today**); the run exits without further processing.
-- **override_date > today** → override is disarmed; all calendar-merge events for that date are removed (scope: **all-day**); the run continues on its normal (skip-day) schedule.
-
-Only events whose title matches the `[TAG] title/source` format are removed — no collateral deletions.
-
-If no override is armed, cancel is a safe no-op.
-
-#### Dry-run mode
-
-Pass `--dry-run` to preview what the script would do without making any changes:
-
-```bash
-uv run calendar-merge --dry-run
-uv run calendar-merge --cancel --dry-run
-```
-
-In dry-run mode:
-- No events are added or deleted in iCloud.
-- No `state.json` changes are persisted.
-- Each planned deletion is printed as `[DRY-RUN] would remove '...'`.
-
-#### State file
-
-Override state is persisted in `state.json` at the project root (auto-created, not committed to version control). It stores `override_flag`, `override_date`, and `telegram_offset` (bookmark into the Telegram update stream for idempotent command detection).
+- To validate your Telegram configuration and automatically capture the chat id, run:
+  ```bash
+  uv run python scripts/telegram_sandbox.py
+  ```
 
 ## Notes
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
