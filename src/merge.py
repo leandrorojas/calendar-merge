@@ -548,11 +548,13 @@ def main():
 
             for icloud_event in filtered_icloud_events:
                 event_time = (icloud_event.start, icloud_event.end)
-                matching_events = source_event_map.get(event_time, [])
-                event_action = EventAction.none if matching_events else EventAction.delete
-                icloud_event.action = event_action
-                for source_event in matching_events:
-                    source_event.action = event_action
+                bucket = source_event_map.get(event_time, [])
+                if bucket:
+                    matched = bucket.pop(0)
+                    matched.action = EventAction.none
+                    icloud_event.action = EventAction.none
+                else:
+                    icloud_event.action = EventAction.delete
                 merge_events.append(icloud_event)
 
             events_to_add = [event for event in source_calendar_events if event.action is None]
