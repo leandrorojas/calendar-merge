@@ -366,7 +366,7 @@ def _reconcile_events(filtered_icloud_events: list[MergeEvent], source_calendar_
         events_to_add = [event for event in source_calendar_events if event.action is None]
         has_additions = len(events_to_add) > 0
     else:
-        has_additions = True
+        has_additions = len(source_calendar_events) > 0
         events_to_add = source_calendar_events
 
     if has_additions:
@@ -583,7 +583,7 @@ def main():
         filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"reconciling events...", False)
+        print_step(TAG_CALENDAR_MERGE, "reconciling events...", False)
         merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
         if event_addition:
             for event in merge_events:
@@ -591,7 +591,7 @@ def main():
                     event.title = source_tag
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"synchronizing events to iCloud calendar...", False)
+        print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", False)
         actionable_events = [event for event in merge_events if event.action != EventAction.none]
         for merge_event in actionable_events:
             if merge_event.action == EventAction.add:

@@ -236,7 +236,7 @@ class TestEndOfDay:
 
 # --- _reconcile_events ---
 
-def _make_event(start_hour, end_hour, title="test", action=None, full_event=None):
+def _make_event(start_hour, end_hour, title="test", action=None, full_event=None) -> MergeEvent:
     """Helper to create MergeEvent instances for testing."""
     start = datetime(2026, 3, 27, start_hour, 0, tzinfo=ZoneInfo("UTC"))
     end = datetime(2026, 3, 27, end_hour, 0, tzinfo=ZoneInfo("UTC"))
@@ -280,7 +280,7 @@ class TestReconcileEvents:
 
     def test_both_empty(self):
         merge_events, has_additions = _reconcile_events([], [])
-        assert has_additions is True
+        assert has_additions is False
         assert len(merge_events) == 0
 
     def test_duplicate_times_in_source(self):
