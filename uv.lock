@@ -51,6 +51,11 @@ dependencies = [
     { name = "pyicloud" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
@@ -58,7 +63,9 @@ requires-dist = [
     { name = "icalendar", specifier = ">=6.3.1" },
     { name = "pyfangs", git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.7.2" },
     { name = "pyicloud", specifier = "==2.1.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "certifi"
