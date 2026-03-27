@@ -10,6 +10,9 @@ dependencies = [
     "pyicloud==2.1.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -20,6 +23,10 @@ include = ["src/merge.py"]
 
 [tool.uv.sources]
 pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.2" }
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
 
 # Optional: CLI entry point (runs merge:main)
 [project.scripts]

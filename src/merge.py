@@ -19,7 +19,7 @@ from time import perf_counter
 import google.generativeai as genai
 
 # custom imports
-from pyfangs.yaml import YamlHelper
+from pyfangs.yaml import YamlHelper, YamlError
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 from pyfangs.ai import GeminiAI
@@ -70,11 +70,11 @@ class EventAction(Enum):
 
 @dataclass
 class MergeEvent(object):
-    title:str
+    title:str | None
     start:datetime
     end:datetime
-    full_event:EventObject
-    action:EventAction
+    full_event:EventObject | None
+    action:EventAction | None
 
 def validate_2fa(api: PyiCloudService) -> bool:
     status:bool = True
@@ -83,57 +83,57 @@ def validate_2fa(api: PyiCloudService) -> bool:
         security_key_names = api.security_key_names
 
         if security_key_names:
-            print_step(TAG_2F_AUTH, f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}", True)
+            print_step(TAG_2F_AUTH, f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}", one_liner=True)
 
             devices = api.fido2_devices
 
-            print_step(TAG_2F_AUTH, "Available FIDO2 devices:", True)
+            print_step(TAG_2F_AUTH, "Available FIDO2 devices:", one_liner=True)
 
             for idx, dev in enumerate(devices, start=1):
-                print_step(TAG_2F_AUTH, f"{idx}: {dev}", True)
+                print_step(TAG_2F_AUTH, f"{idx}: {dev}", one_liner=True)
 
             choice = click.prompt(f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number", type=click.IntRange(1, len(devices)), default=1,)
             selected_device = devices[choice - 1]
 
-            print_step(TAG_2F_AUTH, "Please confirm the action using the security key", True)
+            print_step(TAG_2F_AUTH, "Please confirm the action using the security key", one_liner=True)
 
             api.confirm_security_key(selected_device)
 
         else:
-            print_step(TAG_2F_AUTH, "Two-factor authentication required.", True)
-            print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", True)
+            print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
+            print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", one_liner=True)
             result = api.validate_2fa_code(prompt_telegram_reply("provide the Apple 2FA code"))
-            print_step(TAG_2F_AUTH, f"Code validation result: {result}", True)
+            print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
 
             if not result:
-                print_step(TAG_2F_AUTH, "Failed to verify security code", True)
+                print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
                 status = False
 
         if not api.is_trusted_session:
-            print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", True)
+            print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
             result = api.trust_session()
-            print_step(TAG_2F_AUTH, f"Session trust result {result}", True)
+            print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
 
             if not result:
-                print_step(TAG_2F_AUTH, "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks", True)
+                print_step(TAG_2F_AUTH, "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks", one_liner=True)
 
     elif api.requires_2sa:
-        print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", True)
+        print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", one_liner=True)
 
         devices = api.trusted_devices
         for i, device in enumerate(devices):
-            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', 'SMS to %s' % device.get('phoneNumber'))}", True)
+            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True)
 
         device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
         device = devices[device]
         if not api.send_verification_code(device):
-            print_step(TAG_2F_AUTH, "Failed to send verification code", True)
+            print_step(TAG_2F_AUTH, "Failed to send verification code", one_liner=True)
             status = False
 
         send_telegram_message("Calendar merger triggered Apple two-step authentication. Please enter the validation code.")
         code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
         if not api.validate_verification_code(device, code):
-            print_step(TAG_2F_AUTH, "Failed to verify verification code", True)
+            print_step(TAG_2F_AUTH, "Failed to verify verification code", one_liner=True)
             status = False
 
     return status
@@ -141,10 +141,10 @@ def validate_2fa(api: PyiCloudService) -> bool:
 def get_datetime(dt:datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items:list, value:str):
+def get_from_list(items, value:str):
     try:
         return_value = items.get(value)
-    except:
+    except (AttributeError, TypeError):
         return_value = None
 
     return return_value
@@ -339,6 +339,43 @@ def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
     except Exception:
         return None
 
+def _reconcile_events(filtered_icloud_events: list[MergeEvent], source_calendar_events: list[MergeEvent]) -> tuple[list[MergeEvent], bool]:
+    """Match source events against iCloud events by (start, end) and assign actions.
+
+    Returns (merge_events, has_additions).
+    """
+    merge_events: list[MergeEvent] = []
+    has_additions = False
+
+    if filtered_icloud_events:
+        source_event_map: dict[tuple[datetime, datetime], list[MergeEvent]] = {}
+        for source_event in source_calendar_events:
+            source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
+
+        for icloud_event in filtered_icloud_events:
+            event_time = (icloud_event.start, icloud_event.end)
+            bucket = source_event_map.get(event_time, [])
+            if bucket:
+                matched = bucket.pop(0)
+                matched.action = EventAction.none
+                icloud_event.action = EventAction.none
+            else:
+                icloud_event.action = EventAction.delete
+            merge_events.append(icloud_event)
+
+        events_to_add = [event for event in source_calendar_events if event.action is None]
+        has_additions = len(events_to_add) > 0
+    else:
+        has_additions = len(source_calendar_events) > 0
+        events_to_add = source_calendar_events
+
+    if has_additions:
+        for source_event in events_to_add:
+            source_event.action = EventAction.add
+            merge_events.append(source_event)
+
+    return merge_events, has_additions
+
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
     for raw_event in raw_events:
@@ -372,7 +409,7 @@ def main():
     args = parser.parse_args()
 
     #region CONFIG_LOAD
-    print_step(TAG_CALENDAR_MERGE, "reading config...", False)
+    print_step(TAG_CALENDAR_MERGE, "reading config...", one_liner=False)
     load_dotenv()
     fs = FileSystem()
     config_path = fs.join_paths(str(Path(__file__).resolve().parent.parent), YAML_FILENAME)
@@ -410,7 +447,7 @@ def main():
     #endregion
 
     #region ICLOUD_AUTH
-    print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", False)
+    print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", one_liner=False)
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
     except Exception as err:
@@ -431,7 +468,7 @@ def main():
     #endregion
 
     #region ICLOUD_CALENDAR_LOAD
-    print_step(TAG_CALENDAR_MERGE, "loading iCloud calendar events...", False)
+    print_step(TAG_CALENDAR_MERGE, "loading iCloud calendar events...", one_liner=False)
     calendar_service = icloud_service.calendar
     try:
         calendars = calendar_service.get_calendars()
@@ -464,16 +501,16 @@ def main():
     term.print_done()
     #endregion
 
-    print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value, True)
+    print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value, one_liner=True)
     while True:
         section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
         try:
             calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
-        except Exception:
-            print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "no more source calendars to process" + term.TerminalColors.reset.value, True)
+        except YamlError:
+            print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "no more source calendars to process" + term.TerminalColors.reset.value, one_liner=True)
             break
 
-        print_step(TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", False)
+        print_step(TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", one_liner=False)
         try:
             calendar_tag = yaml_helper.get(section, YAML_SETTING_CALENDAR_TAG)
             calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
@@ -488,7 +525,7 @@ def main():
             raise RuntimeError(f"Missing calendar URL for index {source_index}")
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", False)
+        print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", one_liner=False)
         timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
         try:
             fs.download(calendar_url, timestamp_filename)
@@ -497,7 +534,7 @@ def main():
             raise RuntimeError(f"Unable to download calendar {calendar_source} [{source_index}]") from err
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", False)
+        print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", one_liner=False)
         try:
             with open(timestamp_filename, "rb") as ics_file:
                 ics_calendar = Calendar.from_ical(ics_file.read())
@@ -510,7 +547,7 @@ def main():
         utc_cut_off_date = convert_to_utc(cut_off_date)
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"filtering events from source calendar {calendar_source} [{source_index}]...", False)
+        print_step(TAG_CALENDAR_MERGE, f"filtering events from source calendar {calendar_source} [{source_index}]...", one_liner=False)
         for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
             ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
             if ooo_status is not None:
@@ -542,45 +579,19 @@ def main():
         term.print_done()
         
         source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
-        print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", False)
+        print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
         filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
-        merge_events:list[MergeEvent] = []
-        event_addition = False
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"identifying events to remove...", False)
-        if filtered_icloud_events:
-            source_event_map:dict[tuple[datetime, datetime], list[MergeEvent]] = {}
-            for source_event in source_calendar_events:
-                source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
-
-            for icloud_event in filtered_icloud_events:
-                event_time = (icloud_event.start, icloud_event.end)
-                bucket = source_event_map.get(event_time, [])
-                if bucket:
-                    matched = bucket.pop(0)
-                    matched.action = EventAction.none
-                    icloud_event.action = EventAction.none
-                else:
-                    icloud_event.action = EventAction.delete
-                merge_events.append(icloud_event)
-
-            events_to_add = [event for event in source_calendar_events if event.action is None]
-            event_addition = len(events_to_add) > 0
-        else:
-            event_addition = True
-            events_to_add = source_calendar_events
-        term.print_done()
-
+        print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
+        merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
         if event_addition:
-            print_step(TAG_CALENDAR_MERGE, f"identifying events to add...", False)
-            for source_event in events_to_add:
-                source_event.title = source_tag
-                source_event.action = EventAction.add
-                merge_events.append(source_event)
-            term.print_done()
+            for event in merge_events:
+                if event.action == EventAction.add:
+                    event.title = source_tag
+        term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"synchronizing events to iCloud calendar...", False)
+        print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
         actionable_events = [event for event in merge_events if event.action != EventAction.none]
         for merge_event in actionable_events:
             if merge_event.action == EventAction.add:
