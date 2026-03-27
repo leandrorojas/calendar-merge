@@ -19,7 +19,7 @@ from time import perf_counter
 import google.generativeai as genai
 
 # custom imports
-from pyfangs.yaml import YamlHelper
+from pyfangs.yaml import YamlHelper, YamlError
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 from pyfangs.ai import GeminiAI
@@ -74,7 +74,7 @@ class MergeEvent(object):
     start:datetime
     end:datetime
     full_event:EventObject
-    action:EventAction
+    action:EventAction | None
 
 def validate_2fa(api: PyiCloudService) -> bool:
     status:bool = True
@@ -141,10 +141,10 @@ def validate_2fa(api: PyiCloudService) -> bool:
 def get_datetime(dt:datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items:list, value:str):
+def get_from_list(items, value:str):
     try:
         return_value = items.get(value)
-    except:
+    except Exception:
         return_value = None
 
     return return_value
@@ -506,7 +506,7 @@ def main():
         section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
         try:
             calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
-        except Exception:
+        except YamlError:
             print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "no more source calendars to process" + term.TerminalColors.reset.value, one_liner=True)
             break
 
