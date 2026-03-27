@@ -11,11 +11,11 @@ uv run calendar-merge --first    # Morning sync + AI/Telegram greeting
 uv run calendar-merge --last     # Evening sync + AI/Telegram wrap-up
 ```
 
-No test framework or CI pipeline is currently configured.
+No test framework or CI pipeline is currently configured. A `tests/` directory exists but contains no test files.
 
 ## Architecture
 
-Single-file Python application (`src/merge.py`) that merges multiple ICS calendar feeds into one iCloud calendar.
+Single-file Python application (`src/merge.py`) that merges multiple ICS calendar feeds into one iCloud calendar. The codebase was rolled back to v0.1.3 in March 2026.
 
 **Main flow (sequential regions in `main()`):**
 
