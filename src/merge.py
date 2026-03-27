@@ -122,7 +122,7 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         devices = api.trusted_devices
         for i, device in enumerate(devices):
-            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', 'SMS to %s' % device.get('phoneNumber'))}", one_liner=True)
+            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True)
 
         device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
         device = devices[device]
@@ -144,7 +144,7 @@ def get_datetime(dt:datetime) -> datetime:
 def get_from_list(items, value:str):
     try:
         return_value = items.get(value)
-    except Exception:
+    except (AttributeError, TypeError):
         return_value = None
 
     return return_value
