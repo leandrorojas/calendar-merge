@@ -70,10 +70,10 @@ class EventAction(Enum):
 
 @dataclass
 class MergeEvent(object):
-    title:str
+    title:str | None
     start:datetime
     end:datetime
-    full_event:EventObject
+    full_event:EventObject | None
     action:EventAction | None
 
 def validate_2fa(api: PyiCloudService) -> bool:
