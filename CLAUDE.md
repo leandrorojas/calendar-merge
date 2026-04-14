@@ -11,7 +11,7 @@ uv run calendar-merge --first    # Morning sync + AI/Telegram greeting
 uv run calendar-merge --last     # Evening sync + AI/Telegram wrap-up
 ```
 
-No test framework or CI pipeline is currently configured. A `tests/` directory exists but contains no test files.
+No test framework or CI pipeline is currently configured.
 
 ## Architecture
 
