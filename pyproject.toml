@@ -4,10 +4,9 @@ version = "0.1.1"
 requires-python = ">=3.12"
 dependencies = [
     "dotenv>=0.9.9",
-    "google-generativeai>=0.8.5",
     "icalendar>=6.3.1",
     "pyfangs",
-    "pyicloud==2.1.0",
+    "pyicloud==2.5.0",
 ]
 
 [build-system]
@@ -19,7 +18,7 @@ build-backend = "hatchling.build"
 include = ["src/merge.py"]
 
 [tool.uv.sources]
-pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.2" }
+pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.3" }
 
 # Optional: CLI entry point (runs merge:main)
 [project.scripts]

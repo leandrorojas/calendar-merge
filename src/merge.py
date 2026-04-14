@@ -16,13 +16,11 @@ from dataclasses import dataclass
 from enum import Enum
 from icalendar import Calendar
 from time import perf_counter
-import google.generativeai as genai
 
 # custom imports
 from pyfangs.yaml import YamlHelper, YamlError
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
-from pyfangs.ai import GeminiAI
 import pyfangs.terminal as term
 import pyfangs.telegram as tg
 
@@ -37,7 +35,6 @@ YAML_SETTING_CALENDAR_SOURCE = "source"
 YAML_SETTING_CALENDAR_TAG = "tag"
 YAML_SETTING_CALENDAR_TITLE = "title"
 YAML_SETTING_CALENDAR_TZ = "tz"
-YAML_SETTING_AI_TONE = "ai_tone"
 
 ICLOUD_FIELD_START_DATE = "startDate"
 ICLOUD_FIELD_END_DATE = "endDate"
@@ -55,7 +52,6 @@ ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
 ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
-ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
@@ -101,6 +97,8 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
+            print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
+            api.request_2fa_code()
             print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", one_liner=True)
             result = api.validate_2fa_code(prompt_telegram_reply("provide the Apple 2FA code"))
             print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
@@ -158,40 +156,6 @@ def get_tag(tag:str) -> str:
 
 def print_step(tag:str, message:str, one_liner:bool=True):
     term.print(f"{get_tag(tag)} {message}", one_liner)
-
-def create_ai_service(api_key:str | None) -> GeminiAI | None:
-    if not api_key:
-        term.print(f"{get_tag(TAG_ERROR)} Gemini API key not configured", True)
-        return None
-
-    try:
-        return GeminiAI(api_key)
-    except Exception as err:
-        term.print_failed()
-        term.print(f"{get_tag(TAG_ERROR)} Unable to initialize Gemini AI client: {err}", True)
-        return None
-
-def send_ai_telegram_message(ai_client:GeminiAI | None, prompt:str, fallback_message:str, tone:str | None = None, prefix:str = "", disable_notification:bool=False) -> None:
-    generated_message = None
-    full_prompt = f"{prefix}{prompt}" if prefix else prompt
-
-    if ai_client is not None:
-        try:
-            response = ai_client.generate_text(full_prompt, tone=tone)
-            if response.strip():
-                generated_message = f"{prefix}{response.strip()}"
-        except Exception as err:
-            term.print_failed()
-            term.print(f"{get_tag(TAG_ERROR)} Gemini AI generation failed: {err}", True)
-
-    if generated_message is None:
-        fallback = fallback_message.strip()
-        message = f"{prefix}{fallback}".strip()
-        message += f" ({get_tag(TAG_ERROR)} ai message unavailable)"
-    else:
-        message = generated_message
-
-    send_telegram_message(message, disable_notification=disable_notification)
 
 def send_telegram_message(message:str, disable_notification:bool=False) -> None:
     """
@@ -333,12 +297,6 @@ def _calculate_future_date(start_date: datetime, future_days: int, skip_days: li
 def _end_of_day(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=dt.tzinfo)
 
-def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
-    try:
-        return yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_AI_TONE)
-    except Exception:
-        return None
-
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
     for raw_event in raw_events:
@@ -382,17 +340,8 @@ def main():
         term.print_failed()
         raise RuntimeError("Unable to open YAML configuration") from err
 
-    ai_tone = _get_ai_tone(yaml_helper)
-    ai_client = create_ai_service(os.getenv(ENV_GEMINI_API_KEY)) if (args.first or args.last) else None
-
     if args.first:
-        send_ai_telegram_message(
-            ai_client,
-            "Write a good morning message, different every time. One-liner only.",
-            "calendar-merge started for today.",
-            tone=ai_tone,
-            prefix="☀️ ",
-        )
+        send_telegram_message("☀️ calendar-merge started for today.")
 
     try:
         future_event_days = int(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
@@ -601,13 +550,7 @@ def main():
         source_index += 1
 
     if args.last:
-        send_ai_telegram_message(
-            ai_client,
-            "Write a end of day wrap-up message, different every time. One-liner only.",
-            "calendar-merge finished for today.",
-            tone=ai_tone,
-            prefix="🌙 ",
-        )
+        send_telegram_message("🌙 calendar-merge finished for today.")
 
 if __name__ == "__main__":
     merge_start = perf_counter()
