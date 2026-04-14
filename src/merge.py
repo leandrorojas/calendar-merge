@@ -339,43 +339,6 @@ def _get_ai_tone(yaml_helper:YamlHelper) -> str | None:
     except Exception:
         return None
 
-def _reconcile_events(filtered_icloud_events: list[MergeEvent], source_calendar_events: list[MergeEvent]) -> tuple[list[MergeEvent], bool]:
-    """Match source events against iCloud events by (start, end) and assign actions.
-
-    Returns (merge_events, has_additions).
-    """
-    merge_events: list[MergeEvent] = []
-    has_additions = False
-
-    if filtered_icloud_events:
-        source_event_map: dict[tuple[datetime, datetime], list[MergeEvent]] = {}
-        for source_event in source_calendar_events:
-            source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
-
-        for icloud_event in filtered_icloud_events:
-            event_time = (icloud_event.start, icloud_event.end)
-            bucket = source_event_map.get(event_time, [])
-            if bucket:
-                matched = bucket.pop(0)
-                matched.action = EventAction.none
-                icloud_event.action = EventAction.none
-            else:
-                icloud_event.action = EventAction.delete
-            merge_events.append(icloud_event)
-
-        events_to_add = [event for event in source_calendar_events if event.action is None]
-        has_additions = len(events_to_add) > 0
-    else:
-        has_additions = len(source_calendar_events) > 0
-        events_to_add = source_calendar_events
-
-    if has_additions:
-        for source_event in events_to_add:
-            source_event.action = EventAction.add
-            merge_events.append(source_event)
-
-    return merge_events, has_additions
-
 def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
     events:list[MergeEvent] = []
     for raw_event in raw_events:
@@ -581,15 +544,41 @@ def main():
         source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
         print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
         filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
+        merge_events:list[MergeEvent] = []
+        event_addition = False
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
-        merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
-        if event_addition:
-            for event in merge_events:
-                if event.action == EventAction.add:
-                    event.title = source_tag
+        print_step(TAG_CALENDAR_MERGE, "identifying events to remove...", one_liner=False)
+        if filtered_icloud_events:
+            source_event_map:dict[tuple[datetime, datetime], list[MergeEvent]] = {}
+            for source_event in source_calendar_events:
+                source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
+
+            for icloud_event in filtered_icloud_events:
+                event_time = (icloud_event.start, icloud_event.end)
+                bucket = source_event_map.get(event_time, [])
+                if bucket:
+                    matched = bucket.pop(0)
+                    matched.action = EventAction.none
+                    icloud_event.action = EventAction.none
+                else:
+                    icloud_event.action = EventAction.delete
+                merge_events.append(icloud_event)
+
+            events_to_add = [event for event in source_calendar_events if event.action is None]
+            event_addition = len(events_to_add) > 0
+        else:
+            event_addition = True
+            events_to_add = source_calendar_events
         term.print_done()
+
+        if event_addition:
+            print_step(TAG_CALENDAR_MERGE, "identifying events to add...", one_liner=False)
+            for source_event in events_to_add:
+                source_event.title = source_tag
+                source_event.action = EventAction.add
+                merge_events.append(source_event)
+            term.print_done()
 
         print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
         actionable_events = [event for event in merge_events if event.action != EventAction.none]
