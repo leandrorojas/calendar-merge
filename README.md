@@ -6,8 +6,8 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Pulls events from any calendar that can expose an ICS feed.
 - Normalizes timezones and filters out weekends (or any days you choose).
 - Tags each imported event so you can trace the original source.
-- Works with iCloud's built-in 2FA flow.
-- Optional Telegram alerts (including morning/night summaries via Gemini AI) keep you informed even when you're away from the terminal.
+- Works with iCloud's built-in 2FA flow (trusted-device push via Telegram).
+- Optional Telegram alerts for start-of-day and end-of-day notifications.
 
 ## Requirements
 - Python 3.12+
@@ -44,9 +44,8 @@ Add one entry per calendar feed.
 
 - `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
-- `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications (optional, required if you want Telegram alerts).
+- `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications and 2FA code entry (optional, required if you want Telegram alerts or 2FA handling).
 - `TELEGRAM_CHAT_ID`: Destination chat/channel id. Required whenever `TELEGRAM_BOT_API_TOKEN` is set. To obtain it, send any message to your bot, then call `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and look for `"chat":{"id": ...}` in the response.
-- `GEMINI_API_KEY`: API key for the Gemini AI helper. Required only when using the Telegram morning/night summaries described below.
 
 ### `config.yaml`
 
@@ -54,7 +53,6 @@ Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
 - `config.future_events_days`: Number of non-skipped days ahead to include. `_calculate_future_date()` walks forward from the current date, counting only days not in `skip_days`, so the actual calendar span depends on which day the script runs. For example, with `skip_days: 5, 6` and `future_events_days: 5`: starting on a Monday the window is 5 calendar days (Mon→Fri), but starting on a Wednesday it spans 7 calendar days (Wed→next Tue, skipping Sat and Sun).
-- `config.ai_tone`: Optional text describing how Gemini AI should shape its responses (e.g., `"friendly"`, `"concise/professional"`). Use an empty string to leave Gemini’s default tone.
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
   - `tag`: Label enclosed in brackets in the generated iCloud event title.
@@ -66,7 +64,6 @@ Example:
 config:
   skip_days: 5, 6
   future_events_days: 7
-  ai_tone: "friendly and concise"
 
 source-calendar-0:
   source: "Work"
@@ -92,24 +89,24 @@ uv run calendar-merge
 Add the optional flags when you want Telegram updates:
 
 ```bash
-# Morning sync + AI/Telegram "good morning"
+# Morning sync + Telegram start-of-day message
 uv run calendar-merge --first
 
-# Evening sync + AI/Telegram wrap-up
+# Evening sync + Telegram end-of-day message
 uv run calendar-merge --last
 ```
 
-During the first execution you may be prompted for iCloud two-factor authentication. Subsequent runs reuse the trusted session when possible.
+During the first execution you will be prompted for iCloud two-factor authentication: a 6-digit code is pushed to your trusted Apple devices, and the script sends a Telegram message asking you to reply with the code. Subsequent runs reuse the trusted session when possible.
 
 ### Scheduling
 
 To keep your calendars in sync automatically, hook the command into your scheduler of choice (e.g., `cron`, launchd, Windows Task Scheduler). Make sure the job runs under a user session that has the required iCloud authentication.
 
-#### Telegram / AI summaries
+#### Telegram notifications
 
-- Add `--first` to send a “day is starting” Telegram notification (optionally AI-generated via Gemini).
-- Add `--last` to send an “end of day” notification.
-- Both flags can be combined when you run the script twice per day (morning/evening). The notifications gracefully fall back to static messages if Gemini or Telegram are not configured.
+- Add `--first` to send a "day is starting" Telegram notification.
+- Add `--last` to send an "end of day" Telegram notification.
+- Both flags can be combined when you run the script twice per day (morning/evening).
 - To validate your Telegram setup, send a test message to the bot and confirm the script can deliver notifications to the configured `TELEGRAM_CHAT_ID`.
 
 ## Notes
