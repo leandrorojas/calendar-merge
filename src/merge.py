@@ -97,13 +97,14 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
+            send_telegram_message("provide the Apple 2FA code")
             print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
             try:
                 api.request_2fa_code()
             except Exception as err:
                 print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
-            print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", one_liner=True)
-            code = prompt_telegram_reply("provide the Apple 2FA code")
+            print_step(TAG_2F_AUTH, "waiting for 2FA code via Telegram...", one_liner=True)
+            code = poll_telegram_reply()
             if code:
                 result = api.validate_2fa_code(code)
                 print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
@@ -227,10 +228,13 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
                 if asyncio.iscoroutine(maybe_coro):
                     await maybe_coro
 
+def poll_telegram_reply() -> str | None:
+    return asyncio.run(_wait_for_telegram_reply(None))
+
 def prompt_telegram_reply(prompt: str) -> str | None:
     return asyncio.run(_wait_for_telegram_reply(prompt))
 
-async def _wait_for_telegram_reply(prompt: str) -> str | None:
+async def _wait_for_telegram_reply(prompt: str | None) -> str | None:
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
@@ -253,7 +257,8 @@ async def _wait_for_telegram_reply(prompt: str) -> str | None:
 
     async def _poll_for_reply(notifier: tg.TelegramNotifier) -> str | None:
         offset = None
-        await _send_prompt(notifier)
+        if prompt:
+            await _send_prompt(notifier)
 
         while True:
             updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
