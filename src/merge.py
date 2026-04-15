@@ -98,12 +98,18 @@ def validate_2fa(api: PyiCloudService) -> bool:
         else:
             print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
 
+            # Prevent pyicloud 2.5.0's SMS fallback when the trusted-device bridge
+            # WebSocket times out — we want trusted-device-only validation.
+            api._can_request_sms_2fa_code = lambda: False
+
             def _request_2fa():
                 print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
                 try:
                     api.request_2fa_code()
                 except Exception as err:
                     print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
+                delivery = getattr(api, "two_factor_delivery_method", "unknown")
+                print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
                 print_step(TAG_2F_AUTH, "waiting for 2FA code via Telegram...", one_liner=True)
 
             code = prompt_telegram_reply("provide the Apple 2FA code", after_send=_request_2fa)
