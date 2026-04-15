@@ -100,11 +100,15 @@ def validate_2fa(api: PyiCloudService) -> bool:
             print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
             api.request_2fa_code()
             print_step(TAG_2F_AUTH, "requesting Apple 2FA code via Telegram...", one_liner=True)
-            result = api.validate_2fa_code(prompt_telegram_reply("provide the Apple 2FA code"))
-            print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
-
-            if not result:
-                print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
+            code = prompt_telegram_reply("provide the Apple 2FA code")
+            if code:
+                result = api.validate_2fa_code(code)
+                print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
+                if not result:
+                    print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
+                    status = False
+            else:
+                print_step(TAG_2F_AUTH, "No code received from Telegram", one_liner=True)
                 status = False
 
         if not api.is_trusted_session:
