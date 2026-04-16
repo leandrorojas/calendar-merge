@@ -1,11 +1,14 @@
 # imports
 import argparse
 import asyncio
+import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from logging.handlers import RotatingFileHandler
 
 # partial imports
 from pathlib import Path
@@ -53,16 +56,61 @@ ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
 ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
 ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
+ENV_LOG_FILE = "CALENDAR_MERGE_LOG_FILE"
+ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 
 # Maximum time to wait for a Telegram reply (e.g., 2FA code). Prevents the script
 # from hanging indefinitely when Telegram is flood-controlled or the user is away.
 TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
+
+# Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
+DEFAULT_LOG_FILE = "logs/calendar-merge.log"
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+LOG_BACKUP_COUNT = 5
+
+# Regex to strip ANSI color codes (e.g., TAG_* constants include terminal colors)
+# so file logs stay clean.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
 TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
 # endregion
+
+
+logger = logging.getLogger("calendar-merge")
+
+
+def _configure_logging() -> None:
+    """Set up the rotating file handler for persistent logs.
+
+    Called once at startup. Safe to call multiple times (idempotent).
+    """
+    if logger.handlers:
+        return  # already configured
+
+    level_name = os.getenv(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logger.setLevel(level)
+
+    log_file = os.getenv(ENV_LOG_FILE, DEFAULT_LOG_FILE)
+    log_path = Path(log_file)
+    if not log_path.is_absolute():
+        log_path = Path(__file__).resolve().parent.parent / log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handler = RotatingFileHandler(log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(handler)
+    # Don't propagate to root to avoid duplicate console output.
+    logger.propagate = False
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI color codes so file logs stay clean."""
+    return _ANSI_ESCAPE.sub("", text)
 
 
 class EventAction(Enum):
@@ -201,6 +249,9 @@ def get_tag(tag: str) -> str:
 
 def print_step(tag: str, message: str, one_liner: bool = True):
     term.print(f"{get_tag(tag)} {message}", one_liner)
+    # Mirror to the persistent log, stripped of ANSI color codes.
+    level = logging.ERROR if _strip_ansi(tag) == "error" else logging.INFO
+    logger.log(level, "[%s] %s", _strip_ansi(tag), message)
 
 
 def send_telegram_message(message: str, disable_notification: bool = False) -> None:
@@ -674,6 +725,9 @@ def main():
 
 
 if __name__ == "__main__":
+    _configure_logging()
+    logger.info("calendar-merge started")
+
     merge_start = perf_counter()
     term.print_header_box("iCloud calendar merger")
 
@@ -681,7 +735,10 @@ if __name__ == "__main__":
         main()
     except Exception as err:
         term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {err}")
+        logger.exception("Merge process failed")
         send_telegram_message(f"Calendar merge failed: {err}")
 
     merge_end = perf_counter()
-    term.print_header_box("merge & sync completed", f"total time: {merge_end - merge_start:.3f} seconds")
+    total = merge_end - merge_start
+    term.print_header_box("merge & sync completed", f"total time: {total:.3f} seconds")
+    logger.info("calendar-merge completed in %.3f seconds", total)
