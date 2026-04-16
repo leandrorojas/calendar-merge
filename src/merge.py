@@ -1,30 +1,30 @@
 # imports
-import os
-import click
 import argparse
-
+import asyncio
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 
 # partial imports
 from pathlib import Path
-import asyncio
-from pyicloud import PyiCloudService
-from pyicloud.services.calendar import EventObject
-from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-from dataclasses import dataclass
-from enum import Enum
-from icalendar import Calendar
 from time import perf_counter
+from zoneinfo import ZoneInfo
 
-# custom imports
-from pyfangs.yaml import YamlHelper, YamlError
+import click
+import pyfangs.telegram as tg
+import pyfangs.terminal as term
+from dotenv import load_dotenv
+from icalendar import Calendar
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
-import pyfangs.terminal as term
-import pyfangs.telegram as tg
 
-#region CONSTS
+# custom imports
+from pyfangs.yaml import YamlError, YamlHelper
+from pyicloud import PyiCloudService
+from pyicloud.services.calendar import EventObject
+
+# region CONSTS
 YAML_FILENAME = "config.yaml"
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
@@ -57,29 +57,36 @@ TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColor
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
 TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
 TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
-#endregion
+# endregion
+
 
 class EventAction(Enum):
     none = 0
     add = 1
     delete = 2
 
+
 @dataclass
-class MergeEvent(object):
-    title:str | None
-    start:datetime
-    end:datetime
-    full_event:EventObject | None
-    action:EventAction | None
+class MergeEvent:
+    title: str | None
+    start: datetime
+    end: datetime
+    full_event: EventObject | None
+    action: EventAction | None
+
 
 def validate_2fa(api: PyiCloudService) -> bool:
-    status:bool = True
+    status: bool = True
 
     if api.requires_2fa:
         security_key_names = api.security_key_names
 
         if security_key_names:
-            print_step(TAG_2F_AUTH, f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}", one_liner=True)
+            print_step(
+                TAG_2F_AUTH,
+                f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}",
+                one_liner=True,
+            )
 
             devices = api.fido2_devices
 
@@ -88,7 +95,11 @@ def validate_2fa(api: PyiCloudService) -> bool:
             for idx, dev in enumerate(devices, start=1):
                 print_step(TAG_2F_AUTH, f"{idx}: {dev}", one_liner=True)
 
-            choice = click.prompt(f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number", type=click.IntRange(1, len(devices)), default=1,)
+            choice = click.prompt(
+                f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number",
+                type=click.IntRange(1, len(devices)),
+                default=1,
+            )
             selected_device = devices[choice - 1]
 
             print_step(TAG_2F_AUTH, "Please confirm the action using the security key", one_liner=True)
@@ -129,14 +140,20 @@ def validate_2fa(api: PyiCloudService) -> bool:
             print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
 
             if not result:
-                print_step(TAG_2F_AUTH, "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks", one_liner=True)
+                print_step(
+                    TAG_2F_AUTH,
+                    "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
+                    one_liner=True,
+                )
 
     elif api.requires_2sa:
         print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", one_liner=True)
 
         devices = api.trusted_devices
         for i, device in enumerate(devices):
-            print_step(TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True)
+            print_step(
+                TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True
+            )
 
         device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
         device = devices[device]
@@ -144,7 +161,9 @@ def validate_2fa(api: PyiCloudService) -> bool:
             print_step(TAG_2F_AUTH, "Failed to send verification code", one_liner=True)
             status = False
 
-        send_telegram_message("Calendar merger triggered Apple two-step authentication. Please enter the validation code.")
+        send_telegram_message(
+            "Calendar merger triggered Apple two-step authentication. Please enter the validation code."
+        )
         code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
         if not api.validate_verification_code(device, code):
             print_step(TAG_2F_AUTH, "Failed to verify verification code", one_liner=True)
@@ -152,10 +171,12 @@ def validate_2fa(api: PyiCloudService) -> bool:
 
     return status
 
-def get_datetime(dt:datetime) -> datetime:
+
+def get_datetime(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, tzinfo=dt.tzinfo)
 
-def get_from_list(items, value:str):
+
+def get_from_list(items, value: str):
     try:
         return_value = items.get(value)
     except (AttributeError, TypeError):
@@ -163,17 +184,21 @@ def get_from_list(items, value:str):
 
     return return_value
 
+
 def build_datetime(dt: tuple | list, tz: ZoneInfo) -> datetime:
     """Build datetime from sequence [0, year, month, day, hour, minute]."""
     return datetime(dt[1], dt[2], dt[3], dt[4], dt[5], tzinfo=tz)
 
-def get_tag(tag:str) -> str:
+
+def get_tag(tag: str) -> str:
     return f"[{tag}]"
 
-def print_step(tag:str, message:str, one_liner:bool=True):
+
+def print_step(tag: str, message: str, one_liner: bool = True):
     term.print(f"{get_tag(tag)} {message}", one_liner)
 
-def send_telegram_message(message:str, disable_notification:bool=False) -> None:
+
+def send_telegram_message(message: str, disable_notification: bool = False) -> None:
     """
     Best-effort Telegram notifier used for important user-facing events.
     """
@@ -194,6 +219,7 @@ def send_telegram_message(message:str, disable_notification:bool=False) -> None:
     else:
         # Fire-and-forget when already inside an event loop to avoid nesting asyncio.run.
         loop.create_task(coro)
+
 
 async def send_telegram_message_async(message: str, disable_notification: bool = False) -> None:
     if not message:
@@ -236,10 +262,12 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
                 if asyncio.iscoroutine(maybe_coro):
                     await maybe_coro
 
-def prompt_telegram_reply(prompt: str, after_send: callable = None) -> str | None:
+
+def prompt_telegram_reply(prompt: str, after_send: callable | None = None) -> str | None:
     return asyncio.run(_wait_for_telegram_reply(prompt, after_send))
 
-async def _wait_for_telegram_reply(prompt: str, after_send: callable = None) -> str | None:
+
+async def _wait_for_telegram_reply(prompt: str, after_send: callable | None = None) -> str | None:
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
@@ -252,7 +280,7 @@ async def _wait_for_telegram_reply(prompt: str, after_send: callable = None) -> 
 
     notifier_factory = tg.TelegramNotifier
     supports_ctx = hasattr(notifier_factory, "__aenter__")
-    mark = datetime.now(timezone.utc)
+    mark = datetime.now(UTC)
 
     async def _send_prompt(notifier: tg.TelegramNotifier) -> None:
         if hasattr(notifier, "send_message"):
@@ -275,7 +303,7 @@ async def _wait_for_telegram_reply(prompt: str, after_send: callable = None) -> 
                     if msg and msg.text:
                         msg_dt = msg.date
                         if msg_dt and msg_dt.tzinfo is None:
-                            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                            msg_dt = msg_dt.replace(tzinfo=UTC)
                         if msg_dt and msg_dt >= mark:
                             return msg.text
             else:
@@ -295,10 +323,12 @@ async def _wait_for_telegram_reply(prompt: str, after_send: callable = None) -> 
             if asyncio.iscoroutine(maybe_coro):
                 await maybe_coro
 
+
 def _normalize_skip_days(skip_days) -> list[str]:
     if isinstance(skip_days, str):
         skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
     return [str(day) for day in (skip_days or [])]
+
 
 def _calculate_future_date(start_date: datetime, future_days: int, skip_days: list[str]) -> datetime:
     current_date = start_date
@@ -312,13 +342,15 @@ def _calculate_future_date(start_date: datetime, future_days: int, skip_days: li
 
     return current_date
 
+
 def _end_of_day(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=dt.tzinfo)
 
-def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEvent]:
-    events:list[MergeEvent] = []
+
+def _collect_icloud_events(raw_events: list, skip_days: list[str]) -> list[MergeEvent]:
+    events: list[MergeEvent] = []
     for raw_event in raw_events:
-        all_day:bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
+        all_day: bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
         if all_day is None or all_day:
             continue
 
@@ -340,14 +372,15 @@ def _collect_icloud_events(raw_events:list, skip_days:list[str]) -> list[MergeEv
 
     return events
 
+
 def main():
-    
+
     parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
     parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
     parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
     args = parser.parse_args()
 
-    #region CONFIG_LOAD
+    # region CONFIG_LOAD
     print_step(TAG_CALENDAR_MERGE, "reading config...", one_liner=False)
     load_dotenv()
     fs = FileSystem()
@@ -374,9 +407,9 @@ def main():
         raise RuntimeError("Unable to load skip days configuration") from err
     skip_days = _normalize_skip_days(skip_days)
     term.print_done()
-    #endregion
+    # endregion
 
-    #region ICLOUD_AUTH
+    # region ICLOUD_AUTH
     print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", one_liner=False)
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
@@ -395,9 +428,9 @@ def main():
         term.print_failed()
         raise RuntimeError("2FA validation error") from err
     term.print_done()
-    #endregion
+    # endregion
 
-    #region ICLOUD_CALENDAR_LOAD
+    # region ICLOUD_CALENDAR_LOAD
     print_step(TAG_CALENDAR_MERGE, "loading iCloud calendar events...", one_liner=False)
     calendar_service = icloud_service.calendar
     try:
@@ -423,24 +456,36 @@ def main():
     icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
 
     now = datetime.now()
-    today_bod = datetime(now.year, now.month , now.day, 0, 0, 0)
+    today_bod = datetime(now.year, now.month, now.day, 0, 0, 0)
     cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
     cut_off_date = _end_of_day(cut_off_candidate)
 
     source_index = 0
     term.print_done()
-    #endregion
+    # endregion
 
-    print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value, one_liner=True)
+    print_step(
+        TAG_CALENDAR_MERGE,
+        term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
+        one_liner=True,
+    )
     while True:
         section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
         try:
             calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
         except YamlError:
-            print_step(TAG_CALENDAR_MERGE, term.TerminalColors.yellow.value + "no more source calendars to process" + term.TerminalColors.reset.value, one_liner=True)
+            print_step(
+                TAG_CALENDAR_MERGE,
+                term.TerminalColors.yellow.value
+                + "no more source calendars to process"
+                + term.TerminalColors.reset.value,
+                one_liner=True,
+            )
             break
 
-        print_step(TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", one_liner=False)
+        print_step(
+            TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", one_liner=False
+        )
         try:
             calendar_tag = yaml_helper.get(section, YAML_SETTING_CALENDAR_TAG)
             calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
@@ -471,13 +516,17 @@ def main():
         except Exception as err:
             term.print_failed()
             raise RuntimeError(f"Unable to parse calendar {calendar_source} [{source_index}]") from err
-        
-        source_calendar_events:list[MergeEvent] = []
+
+        source_calendar_events: list[MergeEvent] = []
         utc_today_bod = convert_to_utc(today_bod)
         utc_cut_off_date = convert_to_utc(cut_off_date)
         term.print_done()
 
-        print_step(TAG_CALENDAR_MERGE, f"filtering events from source calendar {calendar_source} [{source_index}]...", one_liner=False)
+        print_step(
+            TAG_CALENDAR_MERGE,
+            f"filtering events from source calendar {calendar_source} [{source_index}]...",
+            one_liner=False,
+        )
         for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
             ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
             if ooo_status is not None:
@@ -491,7 +540,16 @@ def main():
             if not isinstance(start_datetime, datetime):
                 continue
 
-            start_datetime = convert_to_utc(datetime(start_datetime.year, start_datetime.month, start_datetime.day, start_datetime.hour, start_datetime.minute, tzinfo=start_datetime.tzinfo))
+            start_datetime = convert_to_utc(
+                datetime(
+                    start_datetime.year,
+                    start_datetime.month,
+                    start_datetime.day,
+                    start_datetime.hour,
+                    start_datetime.minute,
+                    tzinfo=start_datetime.tzinfo,
+                )
+            )
 
             if str(start_datetime.weekday()) in skip_days:
                 continue
@@ -504,20 +562,29 @@ def main():
                 continue
 
             end_datetime = end_datetime.dt
-            end_datetime = convert_to_utc(datetime(end_datetime.year, end_datetime.month, end_datetime.day, end_datetime.hour, end_datetime.minute, tzinfo=end_datetime.tzinfo))
+            end_datetime = convert_to_utc(
+                datetime(
+                    end_datetime.year,
+                    end_datetime.month,
+                    end_datetime.day,
+                    end_datetime.hour,
+                    end_datetime.minute,
+                    tzinfo=end_datetime.tzinfo,
+                )
+            )
             source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
         term.print_done()
-        
+
         source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
         print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
         filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
-        merge_events:list[MergeEvent] = []
+        merge_events: list[MergeEvent] = []
         event_addition = False
         term.print_done()
 
         print_step(TAG_CALENDAR_MERGE, "identifying events to remove...", one_liner=False)
         if filtered_icloud_events:
-            source_event_map:dict[tuple[datetime, datetime], list[MergeEvent]] = {}
+            source_event_map: dict[tuple[datetime, datetime], list[MergeEvent]] = {}
             for source_event in source_calendar_events:
                 source_event_map.setdefault((source_event.start, source_event.end), []).append(source_event)
 
@@ -552,12 +619,21 @@ def main():
         for merge_event in actionable_events:
             if merge_event.action == EventAction.add:
                 try:
-                    calendar_service.add_event(event=EventObject(pguid=calendar_guid, title=merge_event.title, start_date=merge_event.start.astimezone(calendar_tz), end_date=merge_event.end.astimezone(calendar_tz)))
+                    calendar_service.add_event(
+                        event=EventObject(
+                            pguid=calendar_guid,
+                            title=merge_event.title,
+                            start_date=merge_event.start.astimezone(calendar_tz),
+                            end_date=merge_event.end.astimezone(calendar_tz),
+                        )
+                    )
                 except Exception as err:
                     term.print_failed()
                     raise RuntimeError(f"Unable to add event {merge_event.title}") from err
             elif merge_event.action == EventAction.delete:
-                remove_event = EventObject(pguid=merge_event.full_event["pGuid"],  guid=merge_event.full_event["guid"], title=merge_event.title)
+                remove_event = EventObject(
+                    pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title
+                )
                 try:
                     calendar_service.remove_event(remove_event)
                 except Exception as err:
@@ -569,6 +645,7 @@ def main():
 
     if args.last:
         send_telegram_message("🌙 calendar-merge finished for today.")
+
 
 if __name__ == "__main__":
     merge_start = perf_counter()
