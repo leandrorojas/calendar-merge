@@ -244,7 +244,7 @@ class TestReconcileEvents:
 
     def test_icloud_not_in_source_deleted(self):
         icloud = [_make_event(9, 10, title="[WRK] Work/Google")]
-        source = []
+        source: list[MergeEvent] = []
         merge_events, has_additions = _reconcile_events(icloud, source)
         assert has_additions is False
         assert len(merge_events) == 1
@@ -295,8 +295,9 @@ class TestReconcileEvents:
         ]
         merge_events, has_additions = _reconcile_events(icloud, source)
         assert has_additions is True
-        actions = {action: [] for action in EventAction}
+        actions: dict[EventAction, list[MergeEvent]] = {action: [] for action in EventAction}
         for e in merge_events:
+            assert e.action is not None
             actions[e.action].append(e)
         assert len(actions[EventAction.none]) == 1
         assert len(actions[EventAction.delete]) == 1
