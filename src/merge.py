@@ -128,101 +128,117 @@ class MergeEvent:
     action: EventAction | None
 
 
-def validate_2fa(api: PyiCloudService) -> bool:
-    status: bool = True
+# region 2FA helpers
 
-    if api.requires_2fa:
-        security_key_names = api.security_key_names
 
-        if security_key_names:
+def _validate_2fa_fido2(api: PyiCloudService) -> bool:
+    """Handle FIDO2 security key 2FA flow. Returns True on success."""
+    security_key_names = api.security_key_names
+    print_step(
+        TAG_2F_AUTH,
+        f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}",
+        one_liner=True,
+    )
+
+    devices = api.fido2_devices
+    print_step(TAG_2F_AUTH, "Available FIDO2 devices:", one_liner=True)
+    for idx, dev in enumerate(devices, start=1):
+        print_step(TAG_2F_AUTH, f"{idx}: {dev}", one_liner=True)
+
+    choice = click.prompt(
+        f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number",
+        type=click.IntRange(1, len(devices)),
+        default=1,
+    )
+    api.confirm_security_key(devices[choice - 1])
+    return True
+
+
+def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
+    """Handle trusted-device 2FA code flow via Telegram. Returns True on success."""
+    print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
+
+    # Prevent pyicloud 2.5.0's SMS fallback when the trusted-device bridge
+    # WebSocket times out — we want trusted-device-only validation.
+    api._can_request_sms_2fa_code = lambda: False
+
+    def _request_2fa():
+        print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
+        try:
+            api.request_2fa_code()
+        except Exception as err:
+            print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
+        delivery = getattr(api, "two_factor_delivery_method", "unknown")
+        print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
+        print_step(TAG_2F_AUTH, "waiting for 2FA code via Telegram...", one_liner=True)
+
+    code = prompt_telegram_reply("provide the Apple 2FA code", after_send=_request_2fa)
+    if not code:
+        print_step(TAG_2F_AUTH, "No code received from Telegram", one_liner=True)
+        return False
+
+    result = api.validate_2fa_code(code)
+    print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
+    if not result:
+        print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
+    return result
+
+
+def _validate_2fa_2sa(api: PyiCloudService) -> bool:
+    """Handle legacy two-step authentication flow. Returns True on success."""
+    print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", one_liner=True)
+
+    devices = api.trusted_devices
+    for i, device in enumerate(devices):
+        print_step(
+            TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True
+        )
+
+    device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
+    device = devices[device]
+    if not api.send_verification_code(device):
+        print_step(TAG_2F_AUTH, "Failed to send verification code", one_liner=True)
+        return False
+
+    send_telegram_message("Calendar merger triggered Apple two-step authentication. Please enter the validation code.")
+    code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
+    if not api.validate_verification_code(device, code):
+        print_step(TAG_2F_AUTH, "Failed to verify verification code", one_liner=True)
+        return False
+    return True
+
+
+def _request_session_trust(api: PyiCloudService) -> None:
+    """Request session trust after 2FA validation if needed."""
+    if not api.is_trusted_session:
+        print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
+        result = api.trust_session()
+        print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
+        if not result:
             print_step(
                 TAG_2F_AUTH,
-                f"Security key confirmation is required. Please plug in one of the following keys: {', '.join(security_key_names)}",
+                "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
                 one_liner=True,
             )
 
-            devices = api.fido2_devices
 
-            print_step(TAG_2F_AUTH, "Available FIDO2 devices:", one_liner=True)
-
-            for idx, dev in enumerate(devices, start=1):
-                print_step(TAG_2F_AUTH, f"{idx}: {dev}", one_liner=True)
-
-            choice = click.prompt(
-                f"{get_tag(TAG_2F_AUTH)} Select a FIDO2 device by number",
-                type=click.IntRange(1, len(devices)),
-                default=1,
-            )
-            selected_device = devices[choice - 1]
-
-            print_step(TAG_2F_AUTH, "Please confirm the action using the security key", one_liner=True)
-
-            api.confirm_security_key(selected_device)
-
+def validate_2fa(api: PyiCloudService) -> bool:
+    if api.requires_2fa:
+        if api.security_key_names:
+            _validate_2fa_fido2(api)
         else:
-            print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
+            if not _validate_2fa_trusted_device(api):
+                return False
+        _request_session_trust(api)
+        return True
 
-            # Prevent pyicloud 2.5.0's SMS fallback when the trusted-device bridge
-            # WebSocket times out — we want trusted-device-only validation.
-            api._can_request_sms_2fa_code = lambda: False
+    if api.requires_2sa:
+        return _validate_2fa_2sa(api)
 
-            def _request_2fa():
-                print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
-                try:
-                    api.request_2fa_code()
-                except Exception as err:
-                    print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
-                delivery = getattr(api, "two_factor_delivery_method", "unknown")
-                print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
-                print_step(TAG_2F_AUTH, "waiting for 2FA code via Telegram...", one_liner=True)
+    return True
 
-            code = prompt_telegram_reply("provide the Apple 2FA code", after_send=_request_2fa)
-            if code:
-                result = api.validate_2fa_code(code)
-                print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
-                if not result:
-                    print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
-                    status = False
-            else:
-                print_step(TAG_2F_AUTH, "No code received from Telegram", one_liner=True)
-                status = False
 
-        if not api.is_trusted_session:
-            print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
-            result = api.trust_session()
-            print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
-
-            if not result:
-                print_step(
-                    TAG_2F_AUTH,
-                    "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
-                    one_liner=True,
-                )
-
-    elif api.requires_2sa:
-        print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", one_liner=True)
-
-        devices = api.trusted_devices
-        for i, device in enumerate(devices):
-            print_step(
-                TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True
-            )
-
-        device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
-        device = devices[device]
-        if not api.send_verification_code(device):
-            print_step(TAG_2F_AUTH, "Failed to send verification code", one_liner=True)
-            status = False
-
-        send_telegram_message(
-            "Calendar merger triggered Apple two-step authentication. Please enter the validation code."
-        )
-        code = click.prompt(f"{get_tag(TAG_2F_AUTH)} Please enter validation code")
-        if not api.validate_verification_code(device, code):
-            print_step(TAG_2F_AUTH, "Failed to verify verification code", one_liner=True)
-            status = False
-
-    return status
+# endregion
 
 
 def get_datetime(dt: datetime) -> datetime:
@@ -254,10 +270,11 @@ def print_step(tag: str, message: str, one_liner: bool = True):
     logger.log(level, "[%s] %s", _strip_ansi(tag), message)
 
 
+# region Telegram helpers
+
+
 def send_telegram_message(message: str, disable_notification: bool = False) -> None:
-    """
-    Best-effort Telegram notifier used for important user-facing events.
-    """
+    """Best-effort Telegram notifier used for important user-facing events."""
     if not message:
         return
 
@@ -273,115 +290,119 @@ def send_telegram_message(message: str, disable_notification: bool = False) -> N
         except Exception as err:  # pragma: no cover - safety net
             term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
     else:
-        # Fire-and-forget when already inside an event loop to avoid nesting asyncio.run.
         loop.create_task(coro)
+
+
+async def _get_telegram_credentials() -> tuple[str, str] | None:
+    """Return (token, chat_id) or None if not configured."""
+    token = os.getenv(ENV_TELEGRAM_TOKEN)
+    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
+    if not token:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        return None
+    if not chat_id:
+        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
+        return None
+    return token, chat_id
+
+
+async def _send_via_notifier(notifier: tg.TelegramNotifier, message: str, disable_notification: bool = False) -> None:
+    """Send a message using whichever method the notifier supports."""
+    if hasattr(notifier, "send_message"):
+        await notifier.send_message(message=message, disable_notification=disable_notification)
+    elif disable_notification:
+        await notifier.bot.send_message(chat_id=notifier.chat_id, text=message, disable_notification=True)
+    else:
+        await notifier.send(message)
+
+
+async def _close_notifier(notifier: tg.TelegramNotifier) -> None:
+    """Safely close a notifier that wasn't opened via async-with."""
+    close_fn = getattr(notifier, "close", None)
+    if close_fn:
+        maybe_coro = close_fn()
+        if asyncio.iscoroutine(maybe_coro):
+            await maybe_coro
 
 
 async def send_telegram_message_async(message: str, disable_notification: bool = False) -> None:
     if not message:
         return
 
-    token = os.getenv(ENV_TELEGRAM_TOKEN)
-    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
-
-    if not token:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+    creds = await _get_telegram_credentials()
+    if creds is None:
         return
-
-    if not chat_id:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
-        return
+    token, chat_id = creds
 
     notifier_factory = tg.TelegramNotifier
-    supports_ctx = hasattr(notifier_factory, "__aenter__")
-
-    async def _send_with(notifier: tg.TelegramNotifier) -> None:
-        # Prefer helper method when available (pyfangs newer versions), fallback for backwards compatibility.
-        if hasattr(notifier, "send_message"):
-            await notifier.send_message(message=message, disable_notification=disable_notification)
-        elif disable_notification:
-            await notifier.bot.send_message(chat_id=notifier.chat_id, text=message, disable_notification=True)
-        else:
-            await notifier.send(message)
-
-    if supports_ctx:
+    if hasattr(notifier_factory, "__aenter__"):
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
-            await _send_with(notifier)
+            await _send_via_notifier(notifier, message, disable_notification)
     else:
         notifier = notifier_factory(token=token, chat_id=chat_id)
         try:
-            await _send_with(notifier)
+            await _send_via_notifier(notifier, message, disable_notification)
         finally:
-            close_fn = getattr(notifier, "close", None)
-            if close_fn:
-                maybe_coro = close_fn()
-                if asyncio.iscoroutine(maybe_coro):
-                    await maybe_coro
+            await _close_notifier(notifier)
 
 
 def prompt_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
     return asyncio.run(_wait_for_telegram_reply(prompt, after_send))
 
 
-async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
-    token = os.getenv(ENV_TELEGRAM_TOKEN)
-    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
-    if not token:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
-        return None
+async def _poll_telegram_updates(notifier: tg.TelegramNotifier, mark: datetime, timeout_seconds: int) -> str | None:
+    """Poll for a new text message arriving after *mark*, with timeout."""
+    offset = None
+    deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    while datetime.now(UTC) < deadline:
+        updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
+        if not updates:
+            await asyncio.sleep(1)
+            continue
+        offset = updates[-1].update_id + 1
+        for upd in updates:
+            msg = getattr(upd, "message", None)
+            if not (msg and msg.text):
+                continue
+            msg_dt = msg.date
+            if msg_dt and msg_dt.tzinfo is None:
+                msg_dt = msg_dt.replace(tzinfo=UTC)
+            if msg_dt and msg_dt >= mark:
+                return msg.text
 
-    if not chat_id:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
+    term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
+    return None
+
+
+async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
+    creds = await _get_telegram_credentials()
+    if creds is None:
         return None
+    token, chat_id = creds
 
     notifier_factory = tg.TelegramNotifier
-    supports_ctx = hasattr(notifier_factory, "__aenter__")
     mark = datetime.now(UTC)
 
-    async def _send_prompt(notifier: tg.TelegramNotifier) -> None:
-        if hasattr(notifier, "send_message"):
-            await notifier.send_message(message=prompt, disable_notification=False)
-        else:
-            await notifier.send(prompt)
-
-    async def _poll_for_reply(notifier: tg.TelegramNotifier) -> str | None:
-        offset = None
-        await _send_prompt(notifier)
+    async def _send_and_poll(notifier: tg.TelegramNotifier) -> str | None:
+        await _send_via_notifier(notifier, prompt)
         if after_send:
             after_send()
+        return await _poll_telegram_updates(notifier, mark, TELEGRAM_POLL_TIMEOUT_SECONDS)
 
-        deadline = datetime.now(UTC) + timedelta(seconds=TELEGRAM_POLL_TIMEOUT_SECONDS)
-        while datetime.now(UTC) < deadline:
-            updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
-            if updates:
-                offset = updates[-1].update_id + 1
-                for upd in updates:
-                    msg = getattr(upd, "message", None)
-                    if msg and msg.text:
-                        msg_dt = msg.date
-                        if msg_dt and msg_dt.tzinfo is None:
-                            msg_dt = msg_dt.replace(tzinfo=UTC)
-                        if msg_dt and msg_dt >= mark:
-                            return msg.text
-            else:
-                await asyncio.sleep(1)  # small pause before next poll
-
-        term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
-        return None
-
-    if supports_ctx:
+    if hasattr(notifier_factory, "__aenter__"):
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
-            return await _poll_for_reply(notifier)
+            return await _send_and_poll(notifier)
 
     notifier = notifier_factory(token=token, chat_id=chat_id)
     try:
-        return await _poll_for_reply(notifier)
+        return await _send_and_poll(notifier)
     finally:
-        close_fn = getattr(notifier, "close", None)
-        if close_fn:
-            maybe_coro = close_fn()
-            if asyncio.iscoroutine(maybe_coro):
-                await maybe_coro
+        await _close_notifier(notifier)
+
+
+# endregion
+
+# region Pure logic helpers
 
 
 def _normalize_skip_days(skip_days) -> list[str]:
@@ -474,14 +495,98 @@ def _collect_icloud_events(raw_events: list, skip_days: list[str]) -> list[Merge
     return events
 
 
-def main():
+def _parse_source_events(
+    ics_calendar: Calendar, skip_days: list[str], utc_today_bod: datetime, utc_cut_off_date: datetime
+) -> list[MergeEvent]:
+    """Filter and parse VEVENTs from an ICS calendar into MergeEvents."""
+    events: list[MergeEvent] = []
+    for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
+        ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
+        if ooo_status is not None:
+            continue
 
-    parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
-    parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
-    parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
-    args = parser.parse_args()
+        start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
+        if start_datetime is None:
+            continue
 
-    # region CONFIG_LOAD
+        start_datetime = start_datetime.dt
+        if not isinstance(start_datetime, datetime):
+            continue
+
+        start_datetime = convert_to_utc(
+            datetime(
+                start_datetime.year,
+                start_datetime.month,
+                start_datetime.day,
+                start_datetime.hour,
+                start_datetime.minute,
+                tzinfo=start_datetime.tzinfo,
+            )
+        )
+
+        if str(start_datetime.weekday()) in skip_days:
+            continue
+
+        if not (utc_today_bod <= start_datetime <= utc_cut_off_date):
+            continue
+
+        end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
+        if end_datetime is None:
+            continue
+
+        end_datetime = end_datetime.dt
+        end_datetime = convert_to_utc(
+            datetime(
+                end_datetime.year,
+                end_datetime.month,
+                end_datetime.day,
+                end_datetime.hour,
+                end_datetime.minute,
+                tzinfo=end_datetime.tzinfo,
+            )
+        )
+        events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+    return events
+
+
+def _sync_events_to_icloud(
+    calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent]
+) -> None:
+    """Apply add/delete actions to the iCloud calendar."""
+    actionable_events = [event for event in merge_events if event.action != EventAction.none]
+    for merge_event in actionable_events:
+        if merge_event.action == EventAction.add:
+            try:
+                calendar_service.add_event(
+                    event=EventObject(
+                        pguid=calendar_guid,
+                        title=merge_event.title,
+                        start_date=merge_event.start.astimezone(calendar_tz),
+                        end_date=merge_event.end.astimezone(calendar_tz),
+                    )
+                )
+            except Exception as err:
+                term.print_failed()
+                raise RuntimeError(f"Unable to add event {merge_event.title}") from err
+        elif merge_event.action == EventAction.delete:
+            assert merge_event.full_event is not None
+            remove_event = EventObject(
+                pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title
+            )
+            try:
+                calendar_service.remove_event(remove_event)
+            except Exception as err:
+                term.print_failed()
+                raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
+
+
+# endregion
+
+# region main flow helpers
+
+
+def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem]:
+    """Load .env, parse config.yaml, return (yaml_helper, future_event_days, skip_days, fs)."""
     print_step(TAG_CALENDAR_MERGE, "reading config...", one_liner=False)
     load_dotenv()
     fs = FileSystem()
@@ -491,9 +596,6 @@ def main():
     except Exception as err:
         term.print_failed()
         raise RuntimeError("Unable to open YAML configuration") from err
-
-    if args.first:
-        send_telegram_message("☀️ calendar-merge started for today.")
 
     try:
         future_event_days = int(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
@@ -508,9 +610,11 @@ def main():
         raise RuntimeError("Unable to load skip days configuration") from err
     skip_days = _normalize_skip_days(skip_days)
     term.print_done()
-    # endregion
+    return yaml_helper, future_event_days, skip_days, fs
 
-    # region ICLOUD_AUTH
+
+def _authenticate_icloud() -> PyiCloudService:
+    """Connect to iCloud and handle 2FA. Returns the authenticated service."""
     print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", one_liner=False)
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
@@ -529,9 +633,14 @@ def main():
         term.print_failed()
         raise RuntimeError("2FA validation error") from err
     term.print_done()
-    # endregion
+    return icloud_service
 
-    # region ICLOUD_CALENDAR_LOAD
+
+def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int, skip_days: list[str]) -> tuple:
+    """Fetch calendar GUID, load iCloud events, compute date range.
+
+    Returns (calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date).
+    """
     print_step(TAG_CALENDAR_MERGE, "loading iCloud calendar events...", one_liner=False)
     calendar_service = icloud_service.calendar
     try:
@@ -561,19 +670,129 @@ def main():
     cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
     cut_off_date = _end_of_day(cut_off_candidate)
 
-    source_index = 0
     term.print_done()
-    # endregion
+    return calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now
+
+
+def _process_source_calendar(
+    yaml_helper: YamlHelper,
+    source_index: int,
+    fs: FileSystem,
+    now: datetime,
+    skip_days: list[str],
+    utc_today_bod: datetime,
+    utc_cut_off_date: datetime,
+    icloud_events: list[MergeEvent],
+    calendar_service,
+    calendar_guid: str,
+) -> None:
+    """Download, parse, reconcile, and sync a single source calendar."""
+    section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
+    calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
+
+    print_step(
+        TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", one_liner=False
+    )
+    try:
+        calendar_tag = yaml_helper.get(section, YAML_SETTING_CALENDAR_TAG)
+        calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
+        calendar_tz = ZoneInfo(yaml_helper.get(section, YAML_SETTING_CALENDAR_TZ))
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Invalid calendar configuration at index {source_index}") from err
+
+    calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
+    if not calendar_url:
+        term.print_failed()
+        raise RuntimeError(f"Missing calendar URL for index {source_index}")
+    term.print_done()
+
+    print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", one_liner=False)
+    timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
+    try:
+        fs.download(calendar_url, timestamp_filename)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Unable to download calendar {calendar_source} [{source_index}]") from err
+    term.print_done()
+
+    print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", one_liner=False)
+    try:
+        with open(timestamp_filename, "rb") as ics_file:
+            ics_calendar = Calendar.from_ical(ics_file.read())
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Unable to parse calendar {calendar_source} [{source_index}]") from err
+    term.print_done()
+
+    print_step(
+        TAG_CALENDAR_MERGE,
+        f"filtering events from source calendar {calendar_source} [{source_index}]...",
+        one_liner=False,
+    )
+    source_calendar_events = _parse_source_events(ics_calendar, skip_days, utc_today_bod, utc_cut_off_date)
+    term.print_done()
+
+    source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
+    print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
+    filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
+    term.print_done()
+
+    print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
+    merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
+    if event_addition:
+        for event in merge_events:
+            if event.action == EventAction.add:
+                event.title = source_tag
+    term.print_done()
+
+    print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
+    _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events)
+    term.print_done()
+
+
+# endregion
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
+    parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
+    parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
+    args = parser.parse_args()
+
+    yaml_helper, future_event_days, skip_days, fs = _load_config()
+
+    if args.first:
+        send_telegram_message("☀️ calendar-merge started for today.")
+
+    icloud_service = _authenticate_icloud()
+    calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now = _load_icloud_events(
+        icloud_service, future_event_days, skip_days
+    )
+
+    utc_today_bod = convert_to_utc(today_bod)
+    utc_cut_off_date = convert_to_utc(cut_off_date)
 
     print_step(
         TAG_CALENDAR_MERGE,
         term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
         one_liner=True,
     )
+    source_index = 0
     while True:
-        section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
         try:
-            calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
+            _process_source_calendar(
+                yaml_helper,
+                source_index,
+                fs,
+                now,
+                skip_days,
+                utc_today_bod,
+                utc_cut_off_date,
+                icloud_events,
+                calendar_service,
+                calendar_guid,
+            )
         except YamlError:
             print_step(
                 TAG_CALENDAR_MERGE,
@@ -583,141 +802,6 @@ def main():
                 one_liner=True,
             )
             break
-
-        print_step(
-            TAG_CALENDAR_MERGE, f"reading {calendar_source} [{source_index}] source calendar config...", one_liner=False
-        )
-        try:
-            calendar_tag = yaml_helper.get(section, YAML_SETTING_CALENDAR_TAG)
-            calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
-            calendar_tz = ZoneInfo(yaml_helper.get(section, YAML_SETTING_CALENDAR_TZ))
-        except Exception as err:
-            term.print_failed()
-            raise RuntimeError(f"Invalid calendar configuration at index {source_index}") from err
-
-        calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
-        if not calendar_url:
-            term.print_failed()
-            raise RuntimeError(f"Missing calendar URL for index {source_index}")
-        term.print_done()
-
-        print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", one_liner=False)
-        timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
-        try:
-            fs.download(calendar_url, timestamp_filename)
-        except Exception as err:
-            term.print_failed()
-            raise RuntimeError(f"Unable to download calendar {calendar_source} [{source_index}]") from err
-        term.print_done()
-
-        print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", one_liner=False)
-        try:
-            with open(timestamp_filename, "rb") as ics_file:
-                ics_calendar = Calendar.from_ical(ics_file.read())
-        except Exception as err:
-            term.print_failed()
-            raise RuntimeError(f"Unable to parse calendar {calendar_source} [{source_index}]") from err
-
-        source_calendar_events: list[MergeEvent] = []
-        utc_today_bod = convert_to_utc(today_bod)
-        utc_cut_off_date = convert_to_utc(cut_off_date)
-        term.print_done()
-
-        print_step(
-            TAG_CALENDAR_MERGE,
-            f"filtering events from source calendar {calendar_source} [{source_index}]...",
-            one_liner=False,
-        )
-        for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-            ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
-            if ooo_status is not None:
-                continue
-
-            start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
-            if start_datetime is None:
-                continue
-
-            start_datetime = start_datetime.dt
-            if not isinstance(start_datetime, datetime):
-                continue
-
-            start_datetime = convert_to_utc(
-                datetime(
-                    start_datetime.year,
-                    start_datetime.month,
-                    start_datetime.day,
-                    start_datetime.hour,
-                    start_datetime.minute,
-                    tzinfo=start_datetime.tzinfo,
-                )
-            )
-
-            if str(start_datetime.weekday()) in skip_days:
-                continue
-
-            if not (utc_today_bod <= start_datetime <= utc_cut_off_date):
-                continue
-
-            end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
-            if end_datetime is None:
-                continue
-
-            end_datetime = end_datetime.dt
-            end_datetime = convert_to_utc(
-                datetime(
-                    end_datetime.year,
-                    end_datetime.month,
-                    end_datetime.day,
-                    end_datetime.hour,
-                    end_datetime.minute,
-                    tzinfo=end_datetime.tzinfo,
-                )
-            )
-            source_calendar_events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
-        term.print_done()
-
-        source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
-        print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
-        filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
-        term.print_done()
-
-        print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
-        merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
-        if event_addition:
-            for event in merge_events:
-                if event.action == EventAction.add:
-                    event.title = source_tag
-        term.print_done()
-
-        print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
-        actionable_events = [event for event in merge_events if event.action != EventAction.none]
-        for merge_event in actionable_events:
-            if merge_event.action == EventAction.add:
-                try:
-                    calendar_service.add_event(
-                        event=EventObject(
-                            pguid=calendar_guid,
-                            title=merge_event.title,
-                            start_date=merge_event.start.astimezone(calendar_tz),
-                            end_date=merge_event.end.astimezone(calendar_tz),
-                        )
-                    )
-                except Exception as err:
-                    term.print_failed()
-                    raise RuntimeError(f"Unable to add event {merge_event.title}") from err
-            elif merge_event.action == EventAction.delete:
-                # Delete path is only reached for iCloud-originated events, which always have full_event set.
-                assert merge_event.full_event is not None
-                remove_event = EventObject(
-                    pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title
-                )
-                try:
-                    calendar_service.remove_event(remove_event)
-                except Exception as err:
-                    term.print_failed()
-                    raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
-        term.print_done()
-
         source_index += 1
 
     if args.last:
