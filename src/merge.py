@@ -54,6 +54,10 @@ ENV_VAR_CALENDAR_URL = "CALENDAR_URL_{index}"
 ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
 ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
 
+# Maximum time to wait for a Telegram reply (e.g., 2FA code). Prevents the script
+# from hanging indefinitely when Telegram is flood-controlled or the user is away.
+TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
+
 TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
 TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
 TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
@@ -295,7 +299,8 @@ async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] |
         if after_send:
             after_send()
 
-        while True:
+        deadline = datetime.now(UTC) + timedelta(seconds=TELEGRAM_POLL_TIMEOUT_SECONDS)
+        while datetime.now(UTC) < deadline:
             updates = await notifier.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
             if updates:
                 offset = updates[-1].update_id + 1
@@ -309,6 +314,9 @@ async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] |
                             return msg.text
             else:
                 await asyncio.sleep(1)  # small pause before next poll
+
+        term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
+        return None
 
     if supports_ctx:
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
