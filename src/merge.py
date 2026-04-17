@@ -2,11 +2,12 @@
 import argparse
 import asyncio
 import os
+
+# partial imports
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-
-# partial imports
 from pathlib import Path
 from time import perf_counter
 from zoneinfo import ZoneInfo
@@ -263,11 +264,11 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
                     await maybe_coro
 
 
-def prompt_telegram_reply(prompt: str, after_send: callable | None = None) -> str | None:
+def prompt_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
     return asyncio.run(_wait_for_telegram_reply(prompt, after_send))
 
 
-async def _wait_for_telegram_reply(prompt: str, after_send: callable | None = None) -> str | None:
+async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
@@ -455,8 +456,8 @@ def main():
 
     icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
 
-    now = datetime.now()
-    today_bod = datetime(now.year, now.month, now.day, 0, 0, 0)
+    now = datetime.now().astimezone()
+    today_bod = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=now.tzinfo)
     cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
     cut_off_date = _end_of_day(cut_off_candidate)
 
