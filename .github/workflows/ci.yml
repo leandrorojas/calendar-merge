@@ -32,14 +32,17 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # Exact pin matches .pre-commit-config.yaml so CI and local hooks never
+      # disagree on formatting. --no-build installs from wheels only, so no
+      # sdist setup script is ever executed.
       - name: Install Ruff only (no private deps needed)
-        run: uv tool install "ruff>=0.9"
+        run: uv tool install --no-build "ruff==0.15.10"
 
       - name: Ruff lint
-        run: uv tool run ruff check src/ tests/
+        run: uv tool run --no-build ruff check src/ tests/
 
       - name: Ruff format check
-        run: uv tool run ruff format --check src/ tests/
+        run: uv tool run --no-build ruff format --check src/ tests/
 
   test-and-typecheck:
     name: Test & type check
