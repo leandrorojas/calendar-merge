@@ -69,6 +69,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --locked
 
+      # The deploy key is only needed to fetch pyfangs. Revoke it before running
+      # any PR-authored code (mypy plugins, conftest, tests) so that code cannot
+      # reach the key through SSH_AUTH_SOCK.
+      - name: Revoke SSH agent before running PR code
+        run: |
+          ssh-add -D || true
+          ssh-agent -k || true
+
       - name: Mypy type check
         run: uv run mypy src/ tests/
 
