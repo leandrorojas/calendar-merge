@@ -647,6 +647,8 @@ def main():
                     term.print_failed()
                     raise RuntimeError(f"Unable to add event {merge_event.title}") from err
             elif merge_event.action == EventAction.delete:
+                # Delete path is only reached for iCloud-originated events, which always have full_event set.
+                assert merge_event.full_event is not None
                 remove_event = EventObject(
                     pguid=merge_event.full_event["pGuid"], guid=merge_event.full_event["guid"], title=merge_event.title
                 )

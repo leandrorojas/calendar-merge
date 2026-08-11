@@ -11,6 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "mypy>=1.13",
     "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.9",
@@ -48,6 +49,21 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+# Start lenient; tighten later.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+# Tests often don't need strict typing.
+disallow_untyped_defs = false
 
 # 🔑 Tell Hatch to include your single module
 [tool.hatch.build.targets.wheel]
