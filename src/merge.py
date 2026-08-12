@@ -49,7 +49,13 @@ ICLOUD_FIELD_ALL_DAY_EVENT = "allDay"
 ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
 ICS_FIELD_DATE_END = "dtend"
-ICS_FIELD_OOO = "TRANSP"
+ICS_FIELD_TRANSPARENCY = "TRANSP"
+
+# RFC 5545 TRANSP: "TRANSPARENT" means the event does not consume busy time
+# (free / out-of-office), "OPAQUE" means it blocks time. Only free events are
+# skipped. Note that Outlook emits TRANSP on every event while Google omits it
+# for busy ones, so presence alone cannot be treated as "skip me".
+ICS_TRANSPARENCY_FREE = "TRANSPARENT"
 
 ENV_ICLOUD_USER = "ICLOUD_USERNAME"
 ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
@@ -495,14 +501,25 @@ def _collect_icloud_events(raw_events: list, skip_days: list[str]) -> list[Merge
     return events
 
 
+def _is_free_time(file_event) -> bool:
+    """Return True when a VEVENT is marked as not consuming busy time.
+
+    Only an explicit "TRANSPARENT" value counts as free. A missing TRANSP
+    defaults to OPAQUE per RFC 5545, so the event blocks time and is kept.
+    """
+    transparency = get_from_list(file_event, ICS_FIELD_TRANSPARENCY)
+    if transparency is None:
+        return False
+    return str(transparency).strip().upper() == ICS_TRANSPARENCY_FREE
+
+
 def _parse_source_events(
     ics_calendar: Calendar, skip_days: list[str], utc_today_bod: datetime, utc_cut_off_date: datetime
 ) -> list[MergeEvent]:
     """Filter and parse VEVENTs from an ICS calendar into MergeEvents."""
     events: list[MergeEvent] = []
     for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-        ooo_status = get_from_list(file_event, ICS_FIELD_OOO)
-        if ooo_status is not None:
+        if _is_free_time(file_event):
             continue
 
         start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
