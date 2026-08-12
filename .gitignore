@@ -6,3 +6,10 @@ __pycache__/
 *.log
 *.log.*
 logs/
+
+# test + coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
