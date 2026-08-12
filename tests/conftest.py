@@ -260,7 +260,8 @@ def ics_bytes(events):
     """Render a minimal but valid ICS document.
 
     Each entry is a dict with `start`/`end` as `YYYYMMDDTHHMMSSZ` strings and an
-    optional `transp` value, which merge.py treats as an out-of-office marker.
+    optional `transp` value ("OPAQUE" = busy, "TRANSPARENT" = free). Omitting
+    `transp` mirrors feeds like Google that leave it off busy events.
     """
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//test//EN"]
     for index, event in enumerate(events):

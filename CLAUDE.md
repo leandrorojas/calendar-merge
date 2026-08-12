@@ -64,6 +64,22 @@ Single-file Python application (`src/merge.py`) that merges multiple ICS calenda
 
 **Date filtering:** `_calculate_future_date()` counts N non-skipped weekdays forward — so `future_events_days: 5` with weekends skipped may span 7+ calendar days.
 
+**Event transparency:** `_is_free_time()` skips a source VEVENT only when `TRANSP` is explicitly
+`TRANSPARENT`. A missing `TRANSP` defaults to `OPAQUE` per RFC 5545 and is kept. Do not
+reintroduce a "TRANSP is present → skip" check: Outlook stamps `TRANSP` on every event, so that
+rule silently dropped entire Outlook feeds (0 of 158 events imported), while Google omits it on
+busy events and therefore appeared to work.
+
+**Source feed quirks:** Outlook/Microsoft 365 feeds are plain ICS and need no dedicated code
+path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps
+to IANA zones, so the parsed datetimes arrive timezone-aware.
+
+**Recurring events are not expanded.** `walk(ICS_TAG_VEVENT)` yields the series master, not its
+occurrences, so a repeating meeting contributes at most its original `DTSTART`. Outlook anchors
+series at their original start date, so long-running weekly meetings can contribute nothing to a
+forward-looking window. Expanding them needs RRULE handling plus `EXDATE`/`RECURRENCE-ID`
+overrides.
+
 **2FA flow (pyicloud 2.5.0):** `api.request_2fa_code()` triggers the trusted-device push. The SMS fallback is explicitly disabled via `api._can_request_sms_2fa_code = lambda: False` because pyicloud's trusted-device bridge can time out waiting for the WebSocket return payload (while still successfully pushing the code to the device), which would otherwise switch the delivery method to `"sms"` and reject the trusted-device code at validation.
 
 ## Dependencies

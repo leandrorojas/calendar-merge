@@ -93,6 +93,51 @@ class TestCollectIcloudEvents:
         assert titles == ["a", "c"]
 
 
+# --- _is_free_time ---
+
+
+def vevent(transp=None):
+    """Return the single VEVENT from a rendered ICS document."""
+    event = {"start": "20260812T120000Z", "end": "20260812T130000Z"}
+    if transp is not None:
+        event["transp"] = transp
+    return next(iter(Calendar.from_ical(ics_bytes([event])).walk("VEVENT")))
+
+
+class TestIsFreeTime:
+    def test_transparent_is_free(self):
+        assert merge._is_free_time(vevent("TRANSPARENT")) is True
+
+    def test_opaque_is_busy(self):
+        assert merge._is_free_time(vevent("OPAQUE")) is False
+
+    def test_missing_transp_is_busy(self):
+        # RFC 5545 defaults TRANSP to OPAQUE.
+        assert merge._is_free_time(vevent(None)) is False
+
+    @pytest.mark.parametrize("value", ["transparent", "Transparent", "TrAnSpArEnT"])
+    def test_value_comparison_is_case_insensitive(self, value):
+        assert merge._is_free_time(vevent(value)) is True
+
+    @pytest.mark.parametrize("value", ["  TRANSPARENT  ", "\tTRANSPARENT\t", "TRANSPARENT\r", " transparent "])
+    def test_padded_value_is_still_free(self, value):
+        """icalendar hands back the raw value, whitespace included.
+
+        Without stripping, a padded TRANSPARENT would read as busy and the free
+        event would be synced.
+        """
+        assert merge._is_free_time(vevent(value)) is True
+
+    @pytest.mark.parametrize("value", ["  OPAQUE  ", "\tOPAQUE\r"])
+    def test_padded_opaque_is_still_busy(self, value):
+        assert merge._is_free_time(vevent(value)) is False
+
+    def test_unknown_value_is_treated_as_busy(self):
+        # Anything that is not TRANSPARENT blocks time, so keep the event
+        # rather than silently dropping it.
+        assert merge._is_free_time(vevent("SOMETHING-ELSE")) is False
+
+
 # --- _parse_source_events ---
 
 
@@ -119,10 +164,38 @@ class TestParseSourceEvents:
         assert events[0].full_event is None
         assert events[0].action is None
 
-    def test_skips_out_of_office_events(self):
+    def test_skips_free_events(self):
         events = parse([{"start": "20260812T120000Z", "end": "20260812T130000Z", "transp": "TRANSPARENT"}])
 
         assert events == []
+
+    def test_keeps_busy_events_that_declare_transp(self):
+        """Regression: Outlook stamps TRANSP:OPAQUE on every event.
+
+        Treating the mere presence of TRANSP as "skip" silently dropped the
+        entire Outlook feed.
+        """
+        events = parse([{"start": "20260812T120000Z", "end": "20260812T130000Z", "transp": "OPAQUE"}])
+
+        assert len(events) == 1
+
+    def test_keeps_events_without_transp(self):
+        # RFC 5545 defaults a missing TRANSP to OPAQUE; Google omits it on busy
+        # events, so they must still be imported.
+        events = parse([{"start": "20260812T120000Z", "end": "20260812T130000Z"}])
+
+        assert len(events) == 1
+
+    def test_mixed_feed_keeps_only_busy_events(self):
+        events = parse(
+            [
+                {"start": "20260812T120000Z", "end": "20260812T130000Z", "transp": "OPAQUE"},
+                {"start": "20260813T120000Z", "end": "20260813T130000Z", "transp": "TRANSPARENT"},
+                {"start": "20260814T120000Z", "end": "20260814T130000Z"},
+            ]
+        )
+
+        assert [event.start for event in events] == [utc(2026, 8, 12, 12), utc(2026, 8, 14, 12)]
 
     def test_skips_events_before_window(self):
         events = parse(
@@ -232,6 +305,47 @@ class TestParseSourceEvents:
 
         assert len(events) == 1
         assert events[0].start == utc(2026, 8, 12, 12, 0)
+
+    def test_parses_outlook_shaped_event(self):
+        """End-to-end guard for the Outlook feed shape.
+
+        Outlook uses Windows timezone identifiers rather than IANA names and
+        stamps TRANSP:OPAQUE on busy events. icalendar maps the Windows name,
+        so the event must import and convert to UTC correctly.
+        """
+        raw = (
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:PUBLISH\r\n"
+            b"PRODID:Microsoft Exchange Server 2010\r\n"
+            b"BEGIN:VEVENT\r\nUID:outlook@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART;TZID=Argentina Standard Time:20260812T090000\r\n"
+            b"DTEND;TZID=Argentina Standard Time:20260812T100000\r\n"
+            b"SUMMARY:Standup\r\nTRANSP:OPAQUE\r\n"
+            b"X-MICROSOFT-CDO-BUSYSTATUS:BUSY\r\n"
+            b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        calendar = Calendar.from_ical(raw)
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31))
+
+        assert len(events) == 1
+        # 09:00 Argentina (UTC-3) is 12:00 UTC.
+        assert events[0].start == utc(2026, 8, 12, 12, 0)
+        assert events[0].end == utc(2026, 8, 12, 13, 0)
+
+    def test_skips_outlook_free_event(self):
+        raw = (
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:PUBLISH\r\n"
+            b"PRODID:Microsoft Exchange Server 2010\r\n"
+            b"BEGIN:VEVENT\r\nUID:outlook-free@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART;TZID=Argentina Standard Time:20260812T090000\r\n"
+            b"DTEND;TZID=Argentina Standard Time:20260812T100000\r\n"
+            b"SUMMARY:Focus time\r\nTRANSP:TRANSPARENT\r\n"
+            b"X-MICROSOFT-CDO-BUSYSTATUS:FREE\r\n"
+            b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        calendar = Calendar.from_ical(raw)
+
+        assert merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31)) == []
 
     def test_drops_seconds_from_source_times(self):
         events = parse([{"start": "20260812T120045Z", "end": "20260812T130059Z"}])
