@@ -6,6 +6,8 @@ tagged in git.
 
 ## [Unreleased]
 
+## [v0.1.6] — 2026-08-12
+
 ### Added
 
 - Support for Outlook / Microsoft 365 calendar sources, documented in
