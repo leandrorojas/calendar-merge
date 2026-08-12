@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # No branch filter: stacked PRs target intermediate branches, not just main,
+  # and still need CI to run.
+  pull_request:
+
+# Least privilege: both jobs only read the repo. Overrides the default
+# read/write GITHUB_TOKEN scope.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # Exact pin matches .pre-commit-config.yaml so CI and local hooks never
+      # disagree on formatting. --no-build installs from wheels only, so no
+      # sdist setup script is ever executed.
+      - name: Install Ruff only (no private deps needed)
+        run: uv tool install --no-build "ruff==0.15.10"
+
+      # --from pins the version for the run itself; without it `uv tool run`
+      # re-resolves ruff independently of the install step above.
+      - name: Ruff lint
+        run: uv tool run --no-build --from "ruff==0.15.10" ruff check src/ tests/
+
+      - name: Ruff format check
+        run: uv tool run --no-build --from "ruff==0.15.10" ruff format --check src/ tests/
+
+  test-and-typecheck:
+    name: Test & type check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up SSH for pyfangs (private dependency)
+        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PYFANGS_DEPLOY_KEY }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # --locked fails if uv.lock is missing or stale instead of silently
+      # re-resolving, so CI tests the exact dependency set that is committed.
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      # The deploy key is only needed to fetch pyfangs. Revoke it before running
+      # any PR-authored code (mypy plugins, conftest, tests) so that code cannot
+      # reach the key through SSH_AUTH_SOCK.
+      - name: Revoke SSH agent before running PR code
+        run: |
+          ssh-add -D || true
+          ssh-agent -k || true
+
+      # The environment is already synced above, so skip the implicit sync that
+      # `uv run` would otherwise perform: --no-sync avoids re-resolving,
+      # --frozen keeps the committed lockfile authoritative, and --no-build
+      # blocks sdist setup scripts.
+      - name: Mypy type check
+        run: uv run --no-sync --frozen --no-build mypy src/ tests/
+
+      - name: Pytest
+        run: uv run --no-sync --frozen --no-build pytest tests/ -v

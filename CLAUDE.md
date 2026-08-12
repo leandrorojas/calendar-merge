@@ -6,12 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync                          # Install dependencies
+uv sync --extra dev              # Install dependencies + dev tooling (mypy, pytest)
 uv run calendar-merge            # Run calendar merge
 uv run calendar-merge --first    # Morning sync + Telegram start-of-day notification
 uv run calendar-merge --last     # Evening sync + Telegram end-of-day notification
 ```
 
-No test framework or CI pipeline is currently configured.
+## Quality Checks
+
+```bash
+uv run ruff check src/ tests/            # Lint
+uv run ruff format --check src/ tests/   # Format check
+uv run mypy src/ tests/                  # Type check
+uv run pytest tests/ -v                  # Unit tests
+```
+
+CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
+two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
+`PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
 
 ## Architecture
 
