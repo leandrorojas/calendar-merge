@@ -14,6 +14,9 @@ tagged in git.
 - Dependabot for weekly dependency and GitHub Actions updates
 - `.editorconfig` for cross-editor consistency
 - Telegram reply poll timeout (default 5 min) to prevent indefinite hang
+- Structured file logging via `logging.handlers.RotatingFileHandler`
+  (default: `logs/calendar-merge.log`, 10MB × 5 files). Configurable via
+  `CALENDAR_MERGE_LOG_FILE` and `CALENDAR_MERGE_LOG_LEVEL` env vars.
 
 ### Changed
 - Extracted `_reconcile_events()` from `main()` for testability
