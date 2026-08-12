@@ -78,6 +78,41 @@ source-calendar-1:
   tz: "America/Argentina/Buenos_Aires"
 ```
 
+### Adding an Outlook / Microsoft 365 calendar
+
+Outlook feeds need no special handling — they are plain ICS, so they use the same
+`source-calendar-N` + `CALENDAR_URL_N` pair as any other source.
+
+To get the URL: in Outlook on the web, open **Settings → Calendar → Shared calendars**,
+publish the calendar you want, and copy the **ICS** link (not the HTML one). It looks like
+`https://outlook.office365.com/owa/calendar/<id>@<domain>/<token>/calendar.ics`.
+
+> [!WARNING]
+> That link is an unauthenticated secret — anyone who has it can read the calendar.
+> Keep it in `.env` (which is gitignored) and never commit it.
+
+```yaml
+source-calendar-2:
+  source: "Outlook"
+  tag: "OUT"
+  title: "Work Calendar"
+  tz: "America/Argentina/Buenos_Aires"
+```
+
+```bash
+CALENDAR_URL_2="https://outlook.office365.com/owa/calendar/.../calendar.ics"
+```
+
+Two things worth knowing about Outlook feeds:
+
+- **Timezones.** Outlook uses Windows timezone names (`Argentina Standard Time`) rather than
+  IANA ones. These are mapped automatically, so no extra configuration is needed. The `tz`
+  value above is only used when writing events *into* iCloud.
+- **Recurring events are not expanded yet.** Only the first occurrence of a repeating meeting
+  is considered, and because Outlook anchors a series at its original start date, a long-running
+  weekly meeting may contribute no events at all. One-off meetings sync correctly. See
+  [`CHANGELOG.md`](CHANGELOG.md) for status.
+
 ## Usage
 
 Run the merger after updating your `.env` and `config.yaml`:
