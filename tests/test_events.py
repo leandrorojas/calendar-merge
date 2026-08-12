@@ -119,6 +119,19 @@ class TestIsFreeTime:
     def test_value_comparison_is_case_insensitive(self, value):
         assert merge._is_free_time(vevent(value)) is True
 
+    @pytest.mark.parametrize("value", ["  TRANSPARENT  ", "\tTRANSPARENT\t", "TRANSPARENT\r", " transparent "])
+    def test_padded_value_is_still_free(self, value):
+        """icalendar hands back the raw value, whitespace included.
+
+        Without stripping, a padded TRANSPARENT would read as busy and the free
+        event would be synced.
+        """
+        assert merge._is_free_time(vevent(value)) is True
+
+    @pytest.mark.parametrize("value", ["  OPAQUE  ", "\tOPAQUE\r"])
+    def test_padded_opaque_is_still_busy(self, value):
+        assert merge._is_free_time(vevent(value)) is False
+
     def test_unknown_value_is_treated_as_busy(self):
         # Anything that is not TRANSPARENT blocks time, so keep the event
         # rather than silently dropping it.
