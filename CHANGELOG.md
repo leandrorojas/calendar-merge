@@ -6,6 +6,8 @@ tagged in git.
 
 ## [Unreleased]
 
+## [v0.1.5] — 2026-08-12
+
 ### Added
 - Ruff linter and formatter with pre-commit hooks
 - Pytest unit tests covering pure logic (41 tests)
@@ -17,9 +19,22 @@ tagged in git.
 - Structured file logging via `logging.handlers.RotatingFileHandler`
   (default: `logs/calendar-merge.log`, 10MB × 5 files). Configurable via
   `CALENDAR_MERGE_LOG_FILE` and `CALENDAR_MERGE_LOG_LEVEL` env vars.
+- CHANGELOG, SECURITY policy, and PR/issue templates
 
 ### Changed
 - Extracted `_reconcile_events()` from `main()` for testability
+- Reduced cognitive complexity in `merge.py` per SonarQube
+- Corrected `version` in `pyproject.toml`, which had been left at `0.1.1`
+  through the v0.1.2–v0.1.4 releases
+
+### Security
+- Pinned all GitHub Actions to full commit SHAs; version tags are mutable
+- Restricted `GITHUB_TOKEN` to `contents: read`
+- Pinned `ruff==0.15.10` in CI to match the pre-commit hook, and installed
+  tools with `--no-build` so no sdist setup script executes
+- Added `--locked`/`--frozen` to uv commands so CI cannot drift from `uv.lock`
+- Revoked the SSH agent after fetching `pyfangs`, so PR-authored code cannot
+  reach the deploy key via `SSH_AUTH_SOCK`
 
 ## [v0.1.4] — 2026-04-14
 
