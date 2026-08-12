@@ -86,5 +86,7 @@ jobs:
       - name: Mypy type check
         run: uv run --no-sync --frozen --no-build mypy src/ tests/
 
+      # --cov applies the coverage settings from pyproject, including
+      # fail_under = 100, so a drop in coverage fails the build.
       - name: Pytest
-        run: uv run --no-sync --frozen --no-build pytest tests/ -v
+        run: uv run --no-sync --frozen --no-build pytest tests/ -v --cov

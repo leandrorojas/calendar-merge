@@ -19,11 +19,35 @@ uv run ruff check src/ tests/            # Lint
 uv run ruff format --check src/ tests/   # Format check
 uv run mypy src/ tests/                  # Type check
 uv run pytest tests/ -v                  # Unit tests
+uv run pytest --cov                      # Unit tests + coverage gate
 ```
 
 CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
+
+## Tests
+
+`src/merge.py` is at **100% statement and branch coverage**, enforced by `fail_under = 100` in
+`[tool.coverage.report]`. CI runs `pytest --cov`, so a coverage drop fails the build — new code
+needs new tests.
+
+Test modules by area: `test_2fa.py` (FIDO2 / trusted-device / 2SA branches), `test_telegram.py`
+(send + poll, driven with `asyncio.run` rather than pytest-asyncio), `test_events.py` (iCloud
+collection, ICS parsing, sync), `test_flow.py` (`_load_config`, `_authenticate_icloud`,
+`_load_icloud_events`, `_process_source_calendar`, `main`), `test_logging.py`, and
+`test_entrypoint.py` (the `__main__` block, run via `runpy`).
+
+`tests/conftest.py` holds the fakes (`FakeNotifier`, `FakeCalendarService`, `FakeYamlHelper`,
+`FakeFileSystem`, `fake_api`) and three autouse fixtures that keep runs hermetic: `clean_env`
+unsets every env var the module reads, `quiet_terminal` captures `term.print` output for
+assertions, and `reset_logger` detaches handlers so `_configure_logging`'s idempotence guard
+can't leak between tests.
+
+Two conventions worth keeping:
+- Tests import via `from tests.conftest import ...` because `tests/` is a package.
+- `test_entrypoint.py` patches `pyfangs.yaml.YamlHelper` to force config load to fail, so the run
+  never reaches iCloud even on a machine that has a real `config.yaml` and `.env`.
 
 ## Architecture
 

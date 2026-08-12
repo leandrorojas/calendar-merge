@@ -6,6 +6,21 @@ tagged in git.
 
 ## [Unreleased]
 
+### Added
+- Full test suite: 200 tests at 100% statement and branch coverage of
+  `src/merge.py`, up from 41 tests at 29%. New modules cover the 2FA branches
+  (`test_2fa.py`), Telegram send/poll (`test_telegram.py`), event
+  collection/ICS parsing/iCloud sync (`test_events.py`), the top-level flow and
+  `main()` (`test_flow.py`), logging (`test_logging.py`), and the
+  `__main__` entry point (`test_entrypoint.py`).
+- `tests/conftest.py` with fakes for iCloud, Telegram, YAML, and the filesystem,
+  plus autouse fixtures that isolate env vars, terminal output, and the logger.
+- `pytest-cov` dev dependency and coverage config with `fail_under = 100`;
+  CI runs `pytest --cov` so a coverage drop fails the build.
+
+### Changed
+- Test coverage gate wired into `.github/workflows/ci.yml`
+
 ## [v0.1.5] — 2026-08-12
 
 ### Added
