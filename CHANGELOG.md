@@ -7,7 +7,7 @@ tagged in git.
 ## [Unreleased]
 
 ### Added
-- Full test suite: 199 tests at 100% statement and branch coverage of
+- Full test suite: 200 tests at 100% statement and branch coverage of
   `src/merge.py`, up from 41 tests at 29%. New modules cover the 2FA branches
   (`test_2fa.py`), Telegram send/poll (`test_telegram.py`), event
   collection/ICS parsing/iCloud sync (`test_events.py`), the top-level flow and

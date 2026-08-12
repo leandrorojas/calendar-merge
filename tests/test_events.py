@@ -158,6 +158,28 @@ class TestParseSourceEvents:
 
         assert events == []
 
+    def test_skip_day_is_evaluated_in_utc(self):
+        """Skip days apply to the UTC weekday, not the event's local weekday.
+
+        23:00 Friday in Buenos Aires is 02:00 Saturday UTC, so skipping Saturday
+        must drop it even though it is locally a Friday event.
+        """
+        raw = (
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:tzskip@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART;TZID=America/Argentina/Buenos_Aires:20260814T230000\r\n"
+            b"DTEND;TZID=America/Argentina/Buenos_Aires:20260815T000000\r\n"
+            b"SUMMARY:Late Friday\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        calendar = Calendar.from_ical(raw)
+
+        kept = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31))
+        skipped = merge._parse_source_events(calendar, ["5"], utc(2026, 8, 1), utc(2026, 8, 31))
+
+        assert len(kept) == 1
+        assert kept[0].start == utc(2026, 8, 15, 2, 0)
+        assert skipped == []
+
     def test_skips_all_day_events(self):
         """DTSTART with a bare date parses to a `date`, not a `datetime`."""
         raw = (
