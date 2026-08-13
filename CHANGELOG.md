@@ -22,6 +22,10 @@ tagged in git.
 
 ### Fixed
 
+- `skip_days` now accepts a bare scalar and zero. `skip_days: 6` parses as an int
+  and crashed with `'int' object is not iterable`, and `skip_days: 0` (Monday) was
+  silently treated as "skip nothing" because 0 is falsy. Both are much easier to
+  hit now that a single day is a natural per-source value.
 - Tests could load the developer's real `.env`. `_load_config()` calls
   `load_dotenv()`, which injected real credentials into `os.environ` and undid
   the `clean_env` fixture — the entry-point test reached the live Telegram API
