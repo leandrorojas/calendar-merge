@@ -6,6 +6,27 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- Out-of-office detection is provider-aware again. v0.1.6 replaced the original
+  "any explicit `TRANSP` means skip" rule with the RFC reading (skip only
+  `TRANSPARENT`). That fixed Outlook, which stamps `TRANSP` on every event, but
+  silently broke Google: there a real meeting carries no `TRANSP` at all, and an
+  explicit value marks time you blocked yourself. On a real work calendar that
+  meant 1518 personal blocks — `lunch`, `no meeting time`,
+  `Out of office - Pick Up Kids` — started syncing.
+
+  The feed's publisher is now read once from `PRODID`. Google feeds skip any event
+  with an explicit `TRANSP`; everything else uses the RFC reading plus
+  `X-MICROSOFT-CDO-BUSYSTATUS: OOF`. An unrecognised publisher gets the RFC
+  reading, so a new provider errs towards syncing too much rather than nothing.
+
+  Outlook `TENTATIVE` events are kept, matching a Google "maybe": Google feeds
+  strip `PARTSTAT` entirely, so those already sync.
+
+  Verified against three live feeds — Google work 1630 (was 3148), Google personal
+  4 (unchanged), Outlook 144 (was 0 before v0.1.6).
+
 ## [v0.1.7] — 2026-08-13
 
 ### Added
