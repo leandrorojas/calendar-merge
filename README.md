@@ -51,13 +51,19 @@ Add one entry per calendar feed.
 
 Control which days are synced and how each calendar is labeled.
 
-- `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday).
+- `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday). This is the **default** for every source; individual calendars can override it — see `source-calendar-N.skip_days` below.
 - `config.future_events_days`: Number of non-skipped days ahead to include. `_calculate_future_date()` walks forward from the current date, counting only days not in `skip_days`, so the actual calendar span depends on which day the script runs. For example, with `skip_days: 5, 6` and `future_events_days: 5`: starting on a Monday the window is 5 calendar days (Mon→Fri), but starting on a Wednesday it spans 7 calendar days (Wed→next Tue, skipping Sat and Sun).
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
   - `tag`: Label enclosed in brackets in the generated iCloud event title.
   - `title`: Your friendly name for the merged calendar events.
   - `tz`: Timezone identifier (e.g., `America/New_York`). Events are converted to this timezone when added.
+  - `skip_days`: *Optional.* Overrides `config.skip_days` for this calendar only, using the same format. Use an empty value (`skip_days: ""`) to sync every day. Omit the key entirely to inherit the global setting.
+
+Note that `future_events_days` is **global only** — it cannot be set per source. It is counted using the global `config.skip_days`, and the resulting date window is shared by every calendar. A per-source `skip_days` therefore controls *which weekdays inside that window* are synced, not how far ahead the window reaches.
+
+> [!WARNING]
+> Widening a calendar's `skip_days` orphans events already synced on the newly-skipped days. They stop being reconciled, so they are neither updated nor deleted and remain in iCloud. Narrowing it is safe. Delete those events by hand if you add a skip day later.
 
 Example:
 ```yaml
@@ -76,6 +82,7 @@ source-calendar-1:
   tag: "PRS"
   title: "Family Calendar"
   tz: "America/Argentina/Buenos_Aires"
+  skip_days: ""          # personal calendar syncs every day
 ```
 
 ### Adding an Outlook / Microsoft 365 calendar

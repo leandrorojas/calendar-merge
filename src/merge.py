@@ -527,9 +527,7 @@ def _select_source_icloud_events(
     which matches how the source feed itself is filtered.
     """
     return [
-        event
-        for event in icloud_events
-        if event.title == source_tag and str(event.start.weekday()) not in skip_days
+        event for event in icloud_events if event.title == source_tag and str(event.start.weekday()) not in skip_days
     ]
 
 

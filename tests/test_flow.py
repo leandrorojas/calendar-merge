@@ -294,6 +294,12 @@ class TestResolveSourceSkipDays:
 
 # --- _process_source_calendar ---
 
+# 2026-08-14 is a Friday, 2026-08-15 a Saturday (weekday 5).
+FRIDAY_AND_SATURDAY = (
+    {"start": "20260814T120000Z", "end": "20260814T130000Z"},
+    {"start": "20260815T120000Z", "end": "20260815T130000Z"},
+)
+
 
 def process(
     monkeypatch,
@@ -434,11 +440,6 @@ class TestProcessSourceCalendar:
         # The foreign-tagged event must not be deleted by this source's run.
         assert service.removed == []
 
-    FRIDAY_AND_SATURDAY = [
-        {"start": "20260814T120000Z", "end": "20260814T130000Z"},  # Friday
-        {"start": "20260815T120000Z", "end": "20260815T130000Z"},  # Saturday
-    ]
-
     def test_per_source_skip_days_filters_the_feed(self, monkeypatch, tmp_path):
         """A source that skips Saturday must not import its Saturday events."""
         values = config_values()
@@ -449,7 +450,7 @@ class TestProcessSourceCalendar:
             monkeypatch,
             tmp_path,
             yaml_values=values,
-            ics_events=self.FRIDAY_AND_SATURDAY,
+            ics_events=FRIDAY_AND_SATURDAY,
             default_skip_days=[],  # global skips nothing
         )
 
@@ -464,7 +465,7 @@ class TestProcessSourceCalendar:
             monkeypatch,
             tmp_path,
             yaml_values=values,
-            ics_events=self.FRIDAY_AND_SATURDAY,
+            ics_events=FRIDAY_AND_SATURDAY,
             default_skip_days=["5"],  # global skips Saturday
         )
 
