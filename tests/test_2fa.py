@@ -352,6 +352,66 @@ class TestTwoFactorRetries:
         assert seen["accept"] is merge._is_two_factor_code
 
 
+class TestTwoFactorAcceptedNotification:
+    """The user submits the code on Telegram, so success has to land there too."""
+
+    def test_notifies_telegram_when_the_code_is_accepted(self, monkeypatch, quiet_terminal):
+        sent = []
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "123456")
+        api = fake_api(requires_2fa=True)
+
+        assert merge._validate_2fa_trusted_device(api) is True
+        assert sent == [merge.TELEGRAM_2FA_ACCEPTED_MESSAGE]
+
+    def test_message_says_it_was_accepted(self):
+        # Guards the wording: this is the only signal the user gets on Telegram.
+        assert "accepted" in merge.TELEGRAM_2FA_ACCEPTED_MESSAGE.lower()
+
+    def test_stays_quiet_when_every_attempt_is_rejected(self, monkeypatch, quiet_terminal):
+        sent = []
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "000000")
+        api = fake_api(requires_2fa=True, validate_result=False)
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert sent == []
+
+    def test_stays_quiet_when_no_code_arrives(self, monkeypatch, quiet_terminal):
+        sent = []
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: None)
+        api = fake_api(requires_2fa=True)
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert sent == []
+
+    def test_notifies_once_even_after_retries(self, monkeypatch, quiet_terminal):
+        sent = []
+        codes = iter(["111111", "222222", "333333"])
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: next(codes))
+        api = fake_api(requires_2fa=True)
+        api.validate_2fa_code = lambda code: code == "333333"
+
+        assert merge._validate_2fa_trusted_device(api) is True
+        assert sent == [merge.TELEGRAM_2FA_ACCEPTED_MESSAGE]
+
+    def test_fido2_path_does_not_notify(self, monkeypatch, quiet_terminal):
+        """validate_2fa ignores the FIDO2 result, so success there is not proven.
+
+        The key is confirmed at the terminal anyway, so there is nobody waiting on
+        Telegram to reassure.
+        """
+        sent = []
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge.click, "prompt", lambda *a, **k: 1)
+        api = fake_api(requires_2fa=True, security_key_names=["yubikey"])
+
+        assert merge.validate_2fa(api) is True
+        assert sent == []
+
+
 class TestValidate2faFido2:
     def test_confirms_selected_device(self, monkeypatch, quiet_terminal):
         confirmed = []
