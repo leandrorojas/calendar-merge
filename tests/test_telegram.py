@@ -396,6 +396,7 @@ class TestPromptTelegramReply:
         async def fake_wait(prompt, after_send=None, accept=None):
             seen["prompt"] = prompt
             seen["after_send"] = after_send
+            seen["accept"] = accept
             return "delegated"
 
         monkeypatch.setattr(merge, "_wait_for_telegram_reply", fake_wait)
@@ -404,7 +405,9 @@ class TestPromptTelegramReply:
             return None
 
         assert merge.prompt_telegram_reply("ask", after_send=callback) == "delegated"
-        assert seen == {"prompt": "ask", "after_send": callback}
+        # accept defaults to None: the transport accepts any text unless a caller
+        # opts into filtering.
+        assert seen == {"prompt": "ask", "after_send": callback, "accept": None}
 
 
 class TestPollTimeoutConstant:

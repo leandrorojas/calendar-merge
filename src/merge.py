@@ -191,13 +191,18 @@ def _is_two_factor_code(text: str) -> bool:
 def _validate_two_factor_code(api: PyiCloudService, code: str) -> bool:
     """Submit a code to Apple, treating a raised error as a rejection.
 
+    The code is stripped first. `_is_two_factor_code` accepts surrounding
+    whitespace, and Telegram clients readily append a trailing newline, so
+    submitting the raw text would have Apple reject a reply that was accepted as
+    valid here.
+
     pyicloud returns False for a wrong code but can raise for an expired one.
     Both mean "this code did not work", and both should leave the retry loop
     intact rather than aborting the merge, so the error is reported and counted
     as a failed attempt.
     """
     try:
-        result = api.validate_2fa_code(code)
+        result = api.validate_2fa_code(code.strip())
     except Exception as err:
         print_step(TAG_2F_AUTH, f"Code rejected by Apple: {err}", one_liner=True)
         return False

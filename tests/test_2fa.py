@@ -216,6 +216,26 @@ class TestValidateTwoFactorCode:
         assert merge._validate_two_factor_code(api, "123456") is False
         assert any("Code rejected by Apple: code expired" in line for line in quiet_terminal)
 
+    @pytest.mark.parametrize("reply", ["123456\n", " 123456 ", "\t123456\r\n"])
+    def test_strips_the_code_before_submitting(self, reply, quiet_terminal):
+        """Apple must receive the digits, not the raw Telegram text.
+
+        `_is_two_factor_code` accepts surrounding whitespace and Telegram clients
+        readily append a trailing newline, so submitting the raw reply would have
+        Apple reject a code this module already judged valid.
+        """
+        submitted = []
+
+        def capture(code):
+            submitted.append(code)
+            return True
+
+        api = fake_api(requires_2fa=True)
+        api.validate_2fa_code = capture
+
+        assert merge._validate_two_factor_code(api, reply) is True
+        assert submitted == ["123456"]
+
     def test_coerces_a_truthy_non_bool_result(self, quiet_terminal):
         api = fake_api(requires_2fa=True)
         api.validate_2fa_code = lambda code: "yes"
@@ -301,6 +321,21 @@ class TestTwoFactorRetries:
 
         assert merge._validate_2fa_trusted_device(api) is False
         assert len(calls) == 1
+
+    def test_whitespace_wrapped_reply_reaches_apple_clean(self, monkeypatch, quiet_terminal):
+        """End to end: a reply with a trailing newline still authenticates."""
+        submitted = []
+
+        def capture(code):
+            submitted.append(code)
+            return True
+
+        api = fake_api(requires_2fa=True)
+        api.validate_2fa_code = capture
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "123456\n")
+
+        assert merge._validate_2fa_trusted_device(api) is True
+        assert submitted == ["123456"]
 
     def test_passes_the_code_validator_to_the_prompt(self, monkeypatch, quiet_terminal):
         seen = {}
