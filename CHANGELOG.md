@@ -6,6 +6,14 @@ tagged in git.
 
 ## [Unreleased]
 
+### Added
+
+- Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
+  over Telegram but success was only reported to the terminal and the log file, so
+  an accepted code was indistinguishable from one that never arrived until a
+  failure message or the evening notification appeared. Sent only on the
+  trusted-device path, where the user is actually waiting on Telegram.
+
 ### Changed
 
 - The 2FA code prompt is retried up to three times instead of aborting the merge
