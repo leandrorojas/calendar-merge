@@ -123,6 +123,16 @@ source-calendar-2:
 CALENDAR_URL_2="https://outlook.office365.com/owa/calendar/.../calendar.ics"
 ```
 
+### Duplicate time slots
+
+If a calendar lists two meetings at exactly the same start and end time, only one event is synced —
+the merged calendar shows a single block for that slot. Every synced event carries the same tag, so
+duplicates would have been indistinguishable anyway.
+
+Only exact matches are collapsed. Overlapping meetings (say 13:00–14:00 and 13:30–14:30) remain two
+events. Two *different* calendars holding the same slot also stay separate, since they carry
+different tags.
+
 ### Which events are skipped
 
 Not every event in a feed is synced. What counts as "not a real meeting" depends on who published

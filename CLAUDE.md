@@ -115,6 +115,18 @@ considered and rejected.
 path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps
 to IANA zones, so the parsed datetimes arrive timezone-aware.
 
+**One event per slot per calendar.** `_parse_source_events` ends with
+`_deduplicate_event_slots()`, so a calendar that lists two meetings at the same `(start, end)`
+contributes a single event. This is lossless: parsed source events are
+`MergeEvent(None, start, end, None, None)` with no title or raw event, and every synced event gets
+the same source tag, so duplicates would render as identical blocks. Downstream only needs to know the
+slot is busy.
+
+Only exact matches collapse — overlapping and contained slots stay separate, because merging those
+means choosing new bounds. Deduplication is per calendar, so two sources holding the same slot still
+contribute one event each under their own tags. Note `_reconcile_events` still preserves
+multiplicity if handed duplicates directly; the invariant comes from the parse step.
+
 **Recurring events are not expanded.** `walk(ICS_TAG_VEVENT)` yields the series master, not its
 occurrences, so a repeating meeting contributes at most its original `DTSTART`. Outlook anchors
 series at their original start date, so long-running weekly meetings can contribute nothing to a

@@ -6,6 +6,16 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- A calendar listing two meetings in the same slot no longer syncs two events.
+  `_parse_source_events` now collapses source events sharing an exact
+  `(start, end)`, which is lossless because parsed events carry no title or raw
+  event and every synced event gets the same source tag. Duplicates created
+  before this change clean themselves up on the next run. Only exact matches
+  collapse: overlapping and contained slots stay separate, and deduplication is
+  per calendar. Measured on live feeds: 1630 → 1628 and 144 → 143 events.
+
 ## [v0.1.7] — 2026-08-13
 
 ### Added

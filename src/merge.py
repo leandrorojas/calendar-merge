@@ -590,6 +590,32 @@ def _is_excluded_event(file_event, google_feed: bool) -> bool:
     return str(busy_status).strip().upper() == ICS_MS_BUSY_OUT_OF_OFFICE
 
 
+def _deduplicate_event_slots(events: list[MergeEvent]) -> list[MergeEvent]:
+    """Collapse events from one calendar that occupy the exact same slot.
+
+    Two source events with the same (start, end) are indistinguishable by the
+    time they get here: parsed source events carry no title and no raw event, and
+    every synced event is titled with the same source tag, so the merged calendar
+    would just show identical blocks. What matters downstream is that the slot is
+    busy, not how many meetings fill it.
+
+    Only exact matches collapse. Overlapping or contained slots stay separate,
+    since merging those means choosing new bounds.
+
+    Deduplication is per calendar. Two sources that both hold the same slot still
+    produce one event each, because they carry different source tags.
+    """
+    seen: set[tuple[datetime, datetime]] = set()
+    unique: list[MergeEvent] = []
+    for event in events:
+        slot = (event.start, event.end)
+        if slot in seen:
+            continue
+        seen.add(slot)
+        unique.append(event)
+    return unique
+
+
 def _parse_source_events(
     ics_calendar: Calendar, skip_days: list[str], utc_today_bod: datetime, utc_cut_off_date: datetime
 ) -> list[MergeEvent]:
@@ -642,7 +668,7 @@ def _parse_source_events(
             )
         )
         events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
-    return events
+    return _deduplicate_event_slots(events)
 
 
 def _sync_events_to_icloud(
