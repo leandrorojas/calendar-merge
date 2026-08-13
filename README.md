@@ -123,6 +123,26 @@ source-calendar-2:
 CALENDAR_URL_2="https://outlook.office365.com/owa/calendar/.../calendar.ics"
 ```
 
+### Which events are skipped
+
+Not every event in a feed is synced. What counts as "not a real meeting" depends on who published
+the calendar, because `TRANSP` is used inconsistently:
+
+| Feed | Skipped |
+|---|---|
+| **Google** | Any event with an explicit `TRANSP`. Google omits it on real meetings and writes it only for time you blocked yourself — lunch, focus time, out of office. |
+| **Outlook / other** | Only `TRANSPARENT` (free) events, plus anything marked out of office (`X-MICROSOFT-CDO-BUSYSTATUS: OOF`). |
+
+The publisher is detected from the feed's `PRODID`; an unrecognised one gets the standard reading,
+which errs towards syncing too much rather than nothing.
+
+Outlook's **tentative** events *are* synced. They are the equivalent of a Google "maybe", and Google
+feeds do not expose RSVP status at all, so those already sync — this keeps both providers consistent.
+
+A caveat: a personal block created as an ordinary busy event in Outlook (say a recurring "therapy"
+slot) is indistinguishable from a meeting and will sync. Mark it *free* or *out of office* in Outlook
+if you want it excluded.
+
 Two things worth knowing about Outlook feeds:
 
 - **Timezones.** Outlook uses Windows timezone names (`Argentina Standard Time`) rather than

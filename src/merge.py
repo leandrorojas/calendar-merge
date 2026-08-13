@@ -50,12 +50,28 @@ ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
 ICS_FIELD_DATE_END = "dtend"
 ICS_FIELD_TRANSPARENCY = "TRANSP"
+ICS_FIELD_PRODID = "PRODID"
+ICS_FIELD_MS_BUSY_STATUS = "X-MICROSOFT-CDO-BUSYSTATUS"
 
-# RFC 5545 TRANSP: "TRANSPARENT" means the event does not consume busy time
-# (free / out-of-office), "OPAQUE" means it blocks time. Only free events are
-# skipped. Note that Outlook emits TRANSP on every event while Google omits it
-# for busy ones, so presence alone cannot be treated as "skip me".
+# TRANSP means different things in practice depending on who wrote the feed, so
+# the same value cannot be interpreted the same way everywhere.
+#
+# Google publishes real meetings with no TRANSP at all and writes an explicit
+# value only for time you blocked yourself -- lunch, focus time, out of office.
+# On a shared work calendar those blocks carry TRANSP:OPAQUE, so on a Google feed
+# the *presence* of TRANSP is the signal to skip, whichever value it holds.
+#
+# Outlook stamps TRANSP on every event: OPAQUE for genuine meetings, TRANSPARENT
+# for free time. Treating presence as "skip" there drops the entire feed, so only
+# TRANSPARENT counts as free, plus X-MICROSOFT-CDO-BUSYSTATUS:OOF for out of
+# office. Outlook's TENTATIVE is kept: it is the equivalent of a Google "maybe",
+# and Google feeds strip PARTSTAT entirely so those already sync.
+#
+# Anything that is not recognisably Google follows the RFC reading, so an unknown
+# provider errs towards syncing too much rather than silently syncing nothing.
 ICS_TRANSPARENCY_FREE = "TRANSPARENT"
+ICS_MS_BUSY_OUT_OF_OFFICE = "OOF"
+ICS_PRODID_GOOGLE = "GOOGLE"
 
 ENV_ICLOUD_USER = "ICLOUD_USERNAME"
 ENV_ICLOUD_PASS = "ICLOUD_PASSWORD"
@@ -544,16 +560,34 @@ def _select_source_icloud_events(
     ]
 
 
-def _is_free_time(file_event) -> bool:
-    """Return True when a VEVENT is marked as not consuming busy time.
+def _is_google_feed(ics_calendar: Calendar) -> bool:
+    """Return True when the feed was published by Google Calendar.
 
-    Only an explicit "TRANSPARENT" value counts as free. A missing TRANSP
-    defaults to OPAQUE per RFC 5545, so the event blocks time and is kept.
+    Only Google gets the "any explicit TRANSP means skip" reading; everything
+    else falls back to the RFC interpretation.
+    """
+    prodid = get_from_list(ics_calendar, ICS_FIELD_PRODID)
+    return prodid is not None and ICS_PRODID_GOOGLE in str(prodid).upper()
+
+
+def _is_excluded_event(file_event, google_feed: bool) -> bool:
+    """Return True when a VEVENT should not be synced.
+
+    Excludes free time on any feed, self-blocked time on Google feeds (lunch,
+    focus time, out of office), and out-of-office events on Outlook feeds.
+    Tentative Outlook events are kept -- see the TRANSP notes in CONSTS.
     """
     transparency = get_from_list(file_event, ICS_FIELD_TRANSPARENCY)
-    if transparency is None:
+    if transparency is not None:
+        if str(transparency).strip().upper() == ICS_TRANSPARENCY_FREE:
+            return True
+        if google_feed:
+            return True
+
+    busy_status = get_from_list(file_event, ICS_FIELD_MS_BUSY_STATUS)
+    if busy_status is None:
         return False
-    return str(transparency).strip().upper() == ICS_TRANSPARENCY_FREE
+    return str(busy_status).strip().upper() == ICS_MS_BUSY_OUT_OF_OFFICE
 
 
 def _parse_source_events(
@@ -561,8 +595,10 @@ def _parse_source_events(
 ) -> list[MergeEvent]:
     """Filter and parse VEVENTs from an ICS calendar into MergeEvents."""
     events: list[MergeEvent] = []
+    # The dialect is a property of the feed, so resolve it once.
+    google_feed = _is_google_feed(ics_calendar)
     for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
-        if _is_free_time(file_event):
+        if _is_excluded_event(file_event, google_feed):
             continue
 
         start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)

@@ -80,11 +80,36 @@ the loop. So an optional setting must be read through a helper that catches `Yam
 (see `_resolve_source_skip_days`), after a required setting has already proven the section exists.
 Reading one naively silently drops every calendar after the first that omits it — no error, no log.
 
-**Event transparency:** `_is_free_time()` skips a source VEVENT only when `TRANSP` is explicitly
-`TRANSPARENT`. A missing `TRANSP` defaults to `OPAQUE` per RFC 5545 and is kept. Do not
-reintroduce a "TRANSP is present → skip" check: Outlook stamps `TRANSP` on every event, so that
-rule silently dropped entire Outlook feeds (0 of 158 events imported), while Google omits it on
-busy events and therefore appeared to work.
+**Event exclusion is provider-dependent — do not unify it.** `TRANSP` means different things
+depending on who published the feed, so `_is_excluded_event()` takes a `google_feed` flag that
+`_is_google_feed()` derives once per calendar from `PRODID`.
+
+| Feed | Rule |
+|---|---|
+| Google (`PRODID` contains `Google`) | **Any** explicit `TRANSP` → skip. Real meetings carry no `TRANSP` at all; an explicit value marks time the user blocked themselves (lunch, focus time, out of office). |
+| Anything else | RFC reading: only `TRANSPARENT` → skip, plus `X-MICROSOFT-CDO-BUSYSTATUS: OOF`. |
+
+Both mistakes have already shipped, so neither rule may be applied universally:
+
+- "`TRANSP` present → skip" everywhere (≤ v0.1.5) imported **0 of 158** Outlook events, because
+  Outlook stamps `TRANSP` on every event.
+- "only `TRANSPARENT` → skip" everywhere (v0.1.6–v0.1.7) synced **1518** personal blocks from the
+  Google work calendar — `lunch`, `no meeting time`, `Out of office - Pick Up Kids`.
+
+Measured on the three live feeds: Google work 1630 events (not 3148), Google personal 4, Outlook
+144 (not 0). Corroboration for the Google split: `ATTENDEE` appears on exactly the 1630 meetings
+and `STATUS:CONFIRMED` on exactly the 1518 blocks, so two other properties agree with `TRANSP`.
+
+Outlook `TENTATIVE` is **kept**, deliberately. It is the equivalent of a Google "maybe", and Google
+feeds strip `PARTSTAT` entirely (0 occurrences), so a "maybe" there is indistinguishable from an
+accepted meeting and already syncs. Keeping `TENTATIVE` makes both providers behave the same.
+
+An unrecognised publisher gets the RFC reading, so a new provider errs towards syncing too much
+rather than syncing nothing — the silent failure mode that hid the Outlook breakage for a release.
+
+Two Outlook events (`SALIDA NIÑES`, `TERAPIA`) are personal blocks marked `BUSY`, indistinguishable
+from meetings, and are knowingly synced. Excluding them would need title matching, which was
+considered and rejected.
 
 **Source feed quirks:** Outlook/Microsoft 365 feeds are plain ICS and need no dedicated code
 path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps

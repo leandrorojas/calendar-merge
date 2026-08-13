@@ -272,14 +272,23 @@ def utc(year, month, day, hour=0, minute=0):
     return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
-def ics_bytes(events):
+# Real PRODID values, since feed dialect is detected from this header.
+PRODID_GOOGLE = "-//Google Inc//Google Calendar 70.9054//EN"
+PRODID_OUTLOOK = "Microsoft Exchange Server 2010"
+PRODID_UNKNOWN = "-//test//test//EN"
+
+
+def ics_bytes(events, prodid=PRODID_UNKNOWN):
     """Render a minimal but valid ICS document.
 
-    Each entry is a dict with `start`/`end` as `YYYYMMDDTHHMMSSZ` strings and an
-    optional `transp` value ("OPAQUE" = busy, "TRANSPARENT" = free). Omitting
-    `transp` mirrors feeds like Google that leave it off busy events.
+    Each entry is a dict with `start`/`end` as `YYYYMMDDTHHMMSSZ` strings, plus
+    optional `transp` ("OPAQUE" / "TRANSPARENT") and `busy_status` (Outlook's
+    X-MICROSOFT-CDO-BUSYSTATUS: BUSY / TENTATIVE / OOF / FREE).
+
+    `prodid` decides which dialect merge.py applies, so pass PRODID_GOOGLE to
+    reproduce a Google feed, where an explicit TRANSP marks self-blocked time.
     """
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//test//EN"]
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:{prodid}"]
     for index, event in enumerate(events):
         lines += [
             "BEGIN:VEVENT",
@@ -291,6 +300,8 @@ def ics_bytes(events):
         ]
         if event.get("transp"):
             lines.append(f"TRANSP:{event['transp']}")
+        if event.get("busy_status"):
+            lines.append(f"X-MICROSOFT-CDO-BUSYSTATUS:{event['busy_status']}")
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
     return ("\r\n".join(lines) + "\r\n").encode()

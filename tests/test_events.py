@@ -7,7 +7,17 @@ import pytest
 from icalendar import Calendar
 
 import merge
-from tests.conftest import BA_TZ, FakeCalendarService, icloud_raw_event, ics_bytes, merge_event, utc
+from tests.conftest import (
+    BA_TZ,
+    PRODID_GOOGLE,
+    PRODID_OUTLOOK,
+    PRODID_UNKNOWN,
+    FakeCalendarService,
+    icloud_raw_event,
+    ics_bytes,
+    merge_event,
+    utc,
+)
 
 # --- _collect_icloud_events ---
 
@@ -120,49 +130,123 @@ class TestSelectSourceIcloudEvents:
         assert merge._select_source_icloud_events([], "[W] Work/Google", ["5", "6"]) == []
 
 
-# --- _is_free_time ---
+# --- _is_google_feed ---
 
 
-def vevent(transp=None):
+def calendar_with(prodid, events=None):
+    payload = events or [{"start": "20260812T120000Z", "end": "20260812T130000Z"}]
+    return Calendar.from_ical(ics_bytes(payload, prodid=prodid))
+
+
+class TestIsGoogleFeed:
+    def test_detects_google(self):
+        assert merge._is_google_feed(calendar_with(PRODID_GOOGLE)) is True
+
+    def test_outlook_is_not_google(self):
+        assert merge._is_google_feed(calendar_with(PRODID_OUTLOOK)) is False
+
+    def test_unknown_publisher_is_not_google(self):
+        assert merge._is_google_feed(calendar_with(PRODID_UNKNOWN)) is False
+
+    def test_match_is_case_insensitive(self):
+        assert merge._is_google_feed(calendar_with("-//google inc//whatever//EN")) is True
+
+    def test_missing_prodid(self):
+        raw = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
+        assert merge._is_google_feed(Calendar.from_ical(raw)) is False
+
+
+# --- _is_excluded_event ---
+
+
+def vevent(transp=None, busy_status=None):
     """Return the single VEVENT from a rendered ICS document."""
     event = {"start": "20260812T120000Z", "end": "20260812T130000Z"}
     if transp is not None:
         event["transp"] = transp
+    if busy_status is not None:
+        event["busy_status"] = busy_status
     return next(iter(Calendar.from_ical(ics_bytes([event])).walk("VEVENT")))
 
 
-class TestIsFreeTime:
-    def test_transparent_is_free(self):
-        assert merge._is_free_time(vevent("TRANSPARENT")) is True
+class TestIsExcludedEventRfcFeed:
+    """Non-Google feeds (Outlook, unknown) follow the RFC reading."""
 
-    def test_opaque_is_busy(self):
-        assert merge._is_free_time(vevent("OPAQUE")) is False
+    def test_transparent_is_excluded(self):
+        assert merge._is_excluded_event(vevent("TRANSPARENT"), google_feed=False) is True
 
-    def test_missing_transp_is_busy(self):
+    def test_opaque_is_kept(self):
+        assert merge._is_excluded_event(vevent("OPAQUE"), google_feed=False) is False
+
+    def test_missing_transp_is_kept(self):
         # RFC 5545 defaults TRANSP to OPAQUE.
-        assert merge._is_free_time(vevent(None)) is False
+        assert merge._is_excluded_event(vevent(None), google_feed=False) is False
 
     @pytest.mark.parametrize("value", ["transparent", "Transparent", "TrAnSpArEnT"])
     def test_value_comparison_is_case_insensitive(self, value):
-        assert merge._is_free_time(vevent(value)) is True
+        assert merge._is_excluded_event(vevent(value), google_feed=False) is True
 
     @pytest.mark.parametrize("value", ["  TRANSPARENT  ", "\tTRANSPARENT\t", "TRANSPARENT\r", " transparent "])
-    def test_padded_value_is_still_free(self, value):
-        """icalendar hands back the raw value, whitespace included.
-
-        Without stripping, a padded TRANSPARENT would read as busy and the free
-        event would be synced.
-        """
-        assert merge._is_free_time(vevent(value)) is True
+    def test_padded_value_is_still_excluded(self, value):
+        """icalendar hands back the raw value, whitespace included."""
+        assert merge._is_excluded_event(vevent(value), google_feed=False) is True
 
     @pytest.mark.parametrize("value", ["  OPAQUE  ", "\tOPAQUE\r"])
-    def test_padded_opaque_is_still_busy(self, value):
-        assert merge._is_free_time(vevent(value)) is False
+    def test_padded_opaque_is_still_kept(self, value):
+        assert merge._is_excluded_event(vevent(value), google_feed=False) is False
 
-    def test_unknown_value_is_treated_as_busy(self):
-        # Anything that is not TRANSPARENT blocks time, so keep the event
-        # rather than silently dropping it.
-        assert merge._is_free_time(vevent("SOMETHING-ELSE")) is False
+    def test_unknown_transp_value_is_kept(self):
+        # Anything that is not TRANSPARENT blocks time, so keep the event rather
+        # than silently dropping it.
+        assert merge._is_excluded_event(vevent("SOMETHING-ELSE"), google_feed=False) is False
+
+
+class TestIsExcludedEventOutlookBusyStatus:
+    def test_out_of_office_is_excluded(self):
+        event = vevent("OPAQUE", busy_status="OOF")
+
+        assert merge._is_excluded_event(event, google_feed=False) is True
+
+    def test_busy_is_kept(self):
+        assert merge._is_excluded_event(vevent("OPAQUE", busy_status="BUSY"), google_feed=False) is False
+
+    def test_tentative_is_kept(self):
+        """Outlook TENTATIVE is the equivalent of a Google 'maybe'.
+
+        Google feeds strip PARTSTAT entirely, so a 'maybe' there is
+        indistinguishable from an accepted meeting and already syncs. Keeping
+        TENTATIVE makes the two providers behave the same way.
+        """
+        assert merge._is_excluded_event(vevent("OPAQUE", busy_status="TENTATIVE"), google_feed=False) is False
+
+    def test_free_busy_status_with_transparent(self):
+        assert merge._is_excluded_event(vevent("TRANSPARENT", busy_status="FREE"), google_feed=False) is True
+
+    @pytest.mark.parametrize("value", ["oof", " OOF ", "Oof"])
+    def test_out_of_office_match_is_normalised(self, value):
+        assert merge._is_excluded_event(vevent("OPAQUE", busy_status=value), google_feed=False) is True
+
+
+class TestIsExcludedEventGoogleFeed:
+    """On a Google feed, any explicit TRANSP marks self-blocked time."""
+
+    def test_explicit_opaque_is_excluded(self):
+        """Google writes TRANSP only for lunch, focus time and out of office.
+
+        Real meetings carry no TRANSP at all, so an explicit OPAQUE means the
+        user blocked the slot themselves and it must not sync.
+        """
+        assert merge._is_excluded_event(vevent("OPAQUE"), google_feed=True) is True
+
+    def test_transparent_is_excluded(self):
+        assert merge._is_excluded_event(vevent("TRANSPARENT"), google_feed=True) is True
+
+    def test_missing_transp_is_kept(self):
+        # This is what an actual meeting looks like on a Google feed.
+        assert merge._is_excluded_event(vevent(None), google_feed=True) is False
+
+    def test_unknown_transp_value_is_also_excluded(self):
+        assert merge._is_excluded_event(vevent("SOMETHING-ELSE"), google_feed=True) is True
 
 
 # --- _parse_source_events ---
@@ -195,6 +279,61 @@ class TestParseSourceEvents:
         events = parse([{"start": "20260812T120000Z", "end": "20260812T130000Z", "transp": "TRANSPARENT"}])
 
         assert events == []
+
+    def test_google_feed_skips_self_blocked_time(self):
+        """Regression for the vf work calendar.
+
+        Google writes an explicit TRANSP only for lunch, focus time and out of
+        office; real meetings have none. Treating OPAQUE as busy there synced
+        1518 personal blocks that had always been excluded.
+        """
+        calendar = Calendar.from_ical(
+            ics_bytes(
+                [
+                    {"start": "20260812T120000Z", "end": "20260812T130000Z", "summary": "Busy"},
+                    {"start": "20260812T150000Z", "end": "20260812T160000Z", "summary": "lunch", "transp": "OPAQUE"},
+                    {
+                        "start": "20260812T170000Z",
+                        "end": "20260812T180000Z",
+                        "summary": "no meeting time",
+                        "transp": "OPAQUE",
+                    },
+                ],
+                prodid=PRODID_GOOGLE,
+            )
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31))
+
+        assert len(events) == 1
+        assert events[0].start == utc(2026, 8, 12, 12, 0)
+
+    def test_outlook_feed_keeps_busy_and_tentative_but_drops_ooo(self):
+        calendar = Calendar.from_ical(
+            ics_bytes(
+                [
+                    {"start": "20260812T120000Z", "end": "20260812T130000Z", "transp": "OPAQUE", "busy_status": "BUSY"},
+                    {
+                        "start": "20260813T120000Z",
+                        "end": "20260813T130000Z",
+                        "transp": "OPAQUE",
+                        "busy_status": "TENTATIVE",
+                    },
+                    {"start": "20260814T120000Z", "end": "20260814T130000Z", "transp": "OPAQUE", "busy_status": "OOF"},
+                    {
+                        "start": "20260817T120000Z",
+                        "end": "20260817T130000Z",
+                        "transp": "TRANSPARENT",
+                        "busy_status": "FREE",
+                    },
+                ],
+                prodid=PRODID_OUTLOOK,
+            )
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31))
+
+        assert [event.start for event in events] == [utc(2026, 8, 12, 12), utc(2026, 8, 13, 12)]
 
     def test_keeps_busy_events_that_declare_transp(self):
         """Regression: Outlook stamps TRANSP:OPAQUE on every event.
