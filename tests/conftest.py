@@ -30,7 +30,23 @@ ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch):
+def block_dotenv(monkeypatch):
+    """Stop any test from loading the developer's real .env.
+
+    `_load_config` calls `load_dotenv()`, which injects the contents of a real
+    .env straight into os.environ -- undoing `clean_env` and handing tests live
+    iCloud and Telegram credentials. That is how the entry-point test once
+    reached the real Telegram API and tripped its flood limit.
+
+    Patched on `dotenv` itself rather than on `merge`, because tests that
+    re-execute the module with runpy rebind `load_dotenv` from the source module.
+    """
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+    monkeypatch.setattr(merge, "load_dotenv", lambda *a, **k: False)
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch, block_dotenv):
     """Drop every env var merge.py reads, so tests never inherit a real .env."""
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
