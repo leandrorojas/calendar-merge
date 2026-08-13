@@ -60,6 +60,19 @@ Control which days are synced and how each calendar is labeled.
   - `tz`: Timezone identifier (e.g., `America/New_York`). Events are converted to this timezone when added.
   - `skip_days`: *Optional.* Overrides `config.skip_days` for this calendar only, using the same format. Use an empty value (`skip_days: ""`) to sync every day. Omit the key entirely to inherit the global setting.
 
+Any of these `skip_days` forms work, in either the global or the per-source position:
+
+| Value | Means |
+|---|---|
+| `skip_days: 5, 6` | Saturday and Sunday |
+| `skip_days: 0,6` | Monday and Sunday (spaces optional) |
+| `skip_days: [5, 6]` | same as `5, 6` |
+| `skip_days: 6` | Sunday only — a single day needs no quotes or brackets |
+| `skip_days: 0` | Monday only |
+| `skip_days: ""` | skip nothing (sync every day) |
+| `skip_days: []` | skip nothing |
+| `skip_days:` | skip nothing |
+
 Note that `future_events_days` is **global only** — it cannot be set per source. It is counted using the global `config.skip_days`, and the resulting date window is shared by every calendar. A per-source `skip_days` therefore controls *which weekdays inside that window* are synced, not how far ahead the window reaches.
 
 > [!WARNING]
