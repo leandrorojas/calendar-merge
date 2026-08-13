@@ -542,6 +542,49 @@ class TestProcessSourceCalendar:
         assert len(service.removed) == 1
         assert service.removed[0].guid == "sat-guid"
 
+    def test_duplicate_slot_creates_one_icloud_event(self, monkeypatch, tmp_path):
+        """End to end: two feed events in one slot must add a single event."""
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            ics_events=[
+                {"start": "20260813T130000Z", "end": "20260813T140000Z", "summary": "Standup"},
+                {"start": "20260813T130000Z", "end": "20260813T140000Z", "summary": "Other meeting"},
+            ],
+        )
+
+        assert len(service.added) == 1
+
+    def test_existing_duplicate_pair_in_icloud_is_cleaned_up(self, monkeypatch, tmp_path):
+        """Duplicates synced before this fix are removed on the next run.
+
+        The feed now yields one event for the slot, so the second iCloud copy no
+        longer matches anything and is reconciled away. No manual cleanup needed.
+        """
+        pair = [
+            merge.MergeEvent(
+                title="[W] Google/Work",
+                start=utc(2026, 8, 13, 13),
+                end=utc(2026, 8, 13, 14),
+                full_event=icloud_raw_event(guid=f"dupe-{index}", pguid="p"),
+                action=None,
+            )
+            for index in range(2)
+        ]
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            ics_events=[
+                {"start": "20260813T130000Z", "end": "20260813T140000Z"},
+                {"start": "20260813T130000Z", "end": "20260813T140000Z"},
+            ],
+            icloud_events=pair,
+        )
+
+        assert service.added == []
+        assert len(service.removed) == 1
+
     def test_raises_on_missing_url(self, monkeypatch, tmp_path, quiet_terminal):
         with pytest.raises(RuntimeError, match="Missing calendar URL for index 0"):
             process(monkeypatch, tmp_path, url=None)

@@ -249,6 +249,63 @@ class TestIsExcludedEventGoogleFeed:
         assert merge._is_excluded_event(vevent("SOMETHING-ELSE"), google_feed=True) is True
 
 
+# --- _deduplicate_event_slots ---
+
+
+class TestDeduplicateEventSlots:
+    def test_collapses_identical_slots(self):
+        a = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        b = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([a, b]) == [a]
+
+    def test_keeps_the_first_occurrence(self):
+        a = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        b = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([a, b])[0] is a
+
+    def test_preserves_order_of_distinct_slots(self):
+        first = merge_event(utc(2026, 8, 13, 9), utc(2026, 8, 13, 10))
+        second = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        third = merge_event(utc(2026, 8, 13, 11), utc(2026, 8, 13, 12))
+
+        assert merge._deduplicate_event_slots([first, second, third]) == [first, second, third]
+
+    def test_collapses_three_into_one(self):
+        slot = (utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        events = [merge_event(*slot) for _ in range(3)]
+
+        assert len(merge._deduplicate_event_slots(events)) == 1
+
+    def test_same_start_different_end_is_a_different_slot(self):
+        """Only exact matches collapse; overlaps are left alone deliberately."""
+        full = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        half = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 13, 30))
+
+        assert merge._deduplicate_event_slots([full, half]) == [full, half]
+
+    def test_contained_slot_is_kept(self):
+        outer = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 15))
+        inner = merge_event(utc(2026, 8, 13, 13, 30), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([outer, inner]) == [outer, inner]
+
+    def test_same_end_different_start_is_a_different_slot(self):
+        long_event = merge_event(utc(2026, 8, 13, 12), utc(2026, 8, 13, 14))
+        short_event = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([long_event, short_event]) == [long_event, short_event]
+
+    def test_empty_input(self):
+        assert merge._deduplicate_event_slots([]) == []
+
+    def test_single_event(self):
+        only = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([only]) == [only]
+
+
 # --- _parse_source_events ---
 
 
@@ -518,6 +575,29 @@ class TestParseSourceEvents:
 
         assert events[0].start == utc(2026, 8, 12, 12, 0)
         assert events[0].end == utc(2026, 8, 12, 13, 0)
+
+    def test_two_events_in_the_same_slot_yield_one(self):
+        """Reported case: two meetings 13:00-14:00 must sync as a single block."""
+        events = parse(
+            [
+                {"start": "20260813T130000Z", "end": "20260813T140000Z", "summary": "Standup"},
+                {"start": "20260813T130000Z", "end": "20260813T140000Z", "summary": "Other meeting"},
+            ]
+        )
+
+        assert len(events) == 1
+        assert events[0].start == utc(2026, 8, 13, 13)
+        assert events[0].end == utc(2026, 8, 13, 14)
+
+    def test_overlapping_but_not_identical_slots_both_survive(self):
+        events = parse(
+            [
+                {"start": "20260813T130000Z", "end": "20260813T140000Z"},
+                {"start": "20260813T133000Z", "end": "20260813T143000Z"},
+            ]
+        )
+
+        assert len(events) == 2
 
     def test_parses_multiple_events(self):
         events = parse(
