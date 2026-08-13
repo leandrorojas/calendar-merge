@@ -272,6 +272,31 @@ class TestDeduplicateEventSlots:
 
         assert merge._deduplicate_event_slots([first, second, third]) == [first, second, third]
 
+    def test_collapses_non_contiguous_duplicates(self):
+        """Dedup must not depend on duplicates being adjacent.
+
+        Feeds interleave events, so the second copy of a slot is usually not the
+        next entry. This pins the `seen` lookup rather than a neighbour check.
+        """
+        first = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+        other = merge_event(utc(2026, 8, 13, 15), utc(2026, 8, 13, 16))
+        repeat = merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
+
+        assert merge._deduplicate_event_slots([first, other, repeat]) == [first, other]
+
+    def test_collapses_duplicates_separated_by_several_events(self):
+        first = merge_event(utc(2026, 8, 13, 9), utc(2026, 8, 13, 10))
+        middle = [
+            merge_event(utc(2026, 8, 13, 11), utc(2026, 8, 13, 12)),
+            merge_event(utc(2026, 8, 13, 13), utc(2026, 8, 13, 14)),
+            merge_event(utc(2026, 8, 13, 15), utc(2026, 8, 13, 16)),
+        ]
+        repeat = merge_event(utc(2026, 8, 13, 9), utc(2026, 8, 13, 10))
+
+        result = merge._deduplicate_event_slots([first, *middle, repeat])
+
+        assert result == [first, *middle]
+
     def test_collapses_three_into_one(self):
         slot = (utc(2026, 8, 13, 13), utc(2026, 8, 13, 14))
         events = [merge_event(*slot) for _ in range(3)]

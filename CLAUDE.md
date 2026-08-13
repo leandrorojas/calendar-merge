@@ -119,7 +119,7 @@ to IANA zones, so the parsed datetimes arrive timezone-aware.
 `_deduplicate_event_slots()`, so a calendar that lists two meetings at the same `(start, end)`
 contributes a single event. This is lossless: parsed source events are
 `MergeEvent(None, start, end, None, None)` with no title or raw event, and every synced event gets
-the same source tag, so duplicates rendered as identical blocks. Downstream only needs to know the
+the same source tag, so duplicates would render as identical blocks. Downstream only needs to know the
 slot is busy.
 
 Only exact matches collapse — overlapping and contained slots stay separate, because merging those
