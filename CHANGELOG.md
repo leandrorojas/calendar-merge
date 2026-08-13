@@ -6,6 +6,32 @@ tagged in git.
 
 ## [Unreleased]
 
+### Added
+
+- `skip_days` can now be set per source calendar. A `source-calendar-N` section
+  may declare its own `skip_days`, overriding `config.skip_days`; omitting the
+  key inherits the global value, and an empty value syncs every day.
+  `future_events_days` stays global.
+
+### Changed
+
+- The weekday filter moved out of `_collect_icloud_events()` into the new
+  `_select_source_icloud_events()`, so it is applied per source alongside the
+  title match instead of once with a single global value. Behaviour is unchanged
+  for a source without an override.
+
+### Fixed
+
+- `skip_days` now accepts a bare scalar and zero. `skip_days: 6` parses as an int
+  and crashed with `'int' object is not iterable`, and `skip_days: 0` (Monday) was
+  silently treated as "skip nothing" because 0 is falsy. Both are much easier to
+  hit now that a single day is a natural per-source value.
+- Tests could load the developer's real `.env`. `_load_config()` calls
+  `load_dotenv()`, which injected real credentials into `os.environ` and undid
+  the `clean_env` fixture — the entry-point test reached the live Telegram API
+  and tripped its flood limit. An autouse fixture now neutralises `load_dotenv`
+  for the whole suite.
+
 ## [v0.1.6] — 2026-08-12
 
 ### Added

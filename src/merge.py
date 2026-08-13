@@ -412,9 +412,37 @@ async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] |
 
 
 def _normalize_skip_days(skip_days) -> list[str]:
+    """Coerce a configured skip_days value into a list of weekday strings.
+
+    Accepts what YAML actually produces: "5, 6" and "0,6" (plain scalars), a
+    sequence like [5, 6], a bare scalar like `skip_days: 6`, and None or an empty
+    value for "skip nothing".
+
+    A bare scalar has to be wrapped rather than tested for truthiness, because
+    `skip_days: 0` means Monday and would otherwise be discarded as falsy.
+    """
+    if skip_days is None:
+        return []
     if isinstance(skip_days, str):
         skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
-    return [str(day) for day in (skip_days or [])]
+    elif not isinstance(skip_days, list | tuple | set):
+        skip_days = [skip_days]
+    return [str(day) for day in skip_days]
+
+
+def _resolve_source_skip_days(yaml_helper: YamlHelper, section: str, default_skip_days: list[str]) -> list[str]:
+    """Return a source's own skip_days, falling back to the global setting.
+
+    The YamlError is caught deliberately and must not escape: main() treats a
+    YamlError from a source as "no more source calendars" and stops the loop, so
+    letting a merely-absent optional setting propagate would silently drop every
+    remaining calendar. Callers must already have proven the section exists by
+    reading a required setting first.
+    """
+    try:
+        return _normalize_skip_days(yaml_helper.get(section, YAML_SETTING_SKIP_DAYS))
+    except YamlError:
+        return default_skip_days
 
 
 def _calculate_future_date(start_date: datetime, future_days: int, skip_days: list[str]) -> datetime:
@@ -475,7 +503,12 @@ def _reconcile_events(
     return merge_events, has_additions
 
 
-def _collect_icloud_events(raw_events: list, skip_days: list[str]) -> list[MergeEvent]:
+def _collect_icloud_events(raw_events: list) -> list[MergeEvent]:
+    """Parse existing iCloud events into MergeEvents.
+
+    Deliberately does not filter by skip_days: those are per source now, so the
+    weekday filter is applied later against the owning source's setting.
+    """
     events: list[MergeEvent] = []
     for raw_event in raw_events:
         all_day: bool = get_from_list(raw_event, ICLOUD_FIELD_ALL_DAY_EVENT)
@@ -492,13 +525,23 @@ def _collect_icloud_events(raw_events: list, skip_days: list[str]) -> list[Merge
 
         tzinfo = ZoneInfo(tzinfo)
         start_datetime = convert_to_utc(build_datetime(start_datetime, tzinfo))
-        if str(start_datetime.weekday()) in skip_days:
-            continue
-
         event_end_datetime = convert_to_utc(build_datetime(end_datetime, tzinfo))
         events.append(MergeEvent(event_title, start_datetime, event_end_datetime, raw_event, None))
 
     return events
+
+
+def _select_source_icloud_events(
+    icloud_events: list[MergeEvent], source_tag: str, skip_days: list[str]
+) -> list[MergeEvent]:
+    """Pick the existing iCloud events that belong to one source.
+
+    Events on the source's skipped days are excluded so they are not reconciled,
+    which matches how the source feed itself is filtered.
+    """
+    return [
+        event for event in icloud_events if event.title == source_tag and str(event.start.weekday()) not in skip_days
+    ]
 
 
 def _is_free_time(file_event) -> bool:
@@ -680,7 +723,7 @@ def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int,
         term.print_failed()
         raise RuntimeError("Unable to load events from iCloud") from err
 
-    icloud_events = _collect_icloud_events(all_icloud_events, skip_days)
+    icloud_events = _collect_icloud_events(all_icloud_events)
 
     now = datetime.now().astimezone()
     today_bod = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=now.tzinfo)
@@ -696,14 +739,18 @@ def _process_source_calendar(
     source_index: int,
     fs: FileSystem,
     now: datetime,
-    skip_days: list[str],
+    default_skip_days: list[str],
     utc_today_bod: datetime,
     utc_cut_off_date: datetime,
     icloud_events: list[MergeEvent],
     calendar_service,
     calendar_guid: str,
 ) -> None:
-    """Download, parse, reconcile, and sync a single source calendar."""
+    """Download, parse, reconcile, and sync a single source calendar.
+
+    `default_skip_days` is the global `config.skip_days`, used unless the source
+    section declares its own.
+    """
     section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
     calendar_source = yaml_helper.get(section, YAML_SETTING_CALENDAR_SOURCE)
 
@@ -717,6 +764,10 @@ def _process_source_calendar(
     except Exception as err:
         term.print_failed()
         raise RuntimeError(f"Invalid calendar configuration at index {source_index}") from err
+
+    # Optional per-source override; the section is known to exist by now because
+    # the required settings above were read successfully.
+    skip_days = _resolve_source_skip_days(yaml_helper, section, default_skip_days)
 
     calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
     if not calendar_url:
@@ -752,7 +803,7 @@ def _process_source_calendar(
 
     source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
     print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
-    filtered_icloud_events = [event for event in icloud_events if event.title == source_tag]
+    filtered_icloud_events = _select_source_icloud_events(icloud_events, source_tag, skip_days)
     term.print_done()
 
     print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)

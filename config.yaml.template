@@ -1,15 +1,20 @@
 config:
-  # 0=Monday ... 6=Sunday
+  # Default skipped weekdays for every source. 0=Monday ... 6=Sunday.
+  # A source-calendar-N block can override this with its own skip_days.
   skip_days: 5, 6
+  # Global: how many non-skipped days ahead to sync. Not overridable per source,
+  # and it is counted using the global skip_days above.
   future_events_days: 5
 
 # One block per source calendar. Indexes must start at 0 and be consecutive,
 # and each block needs a matching CALENDAR_URL_<index> entry in .env.
 #
-#   source: short name of the upstream calendar (e.g. Google, Outlook)
-#   tag:    shown in brackets in the generated iCloud event title
-#   title:  your friendly name for the merged events
-#   tz:     IANA timezone used when writing events into iCloud
+#   source:    short name of the upstream calendar (e.g. Google, Outlook)
+#   tag:       shown in brackets in the generated iCloud event title
+#   title:     your friendly name for the merged events
+#   tz:        IANA timezone used when writing events into iCloud
+#   skip_days: optional; overrides config.skip_days for this calendar only.
+#              Use an empty value to sync every day.
 
 source-calendar-0:
   source: "Google"
@@ -25,3 +30,6 @@ source-calendar-1:
   tag: "OUT"
   title: "Work Calendar"
   tz: "America/Argentina/Buenos_Aires"
+  # Overrides config.skip_days: this calendar syncs Saturdays too.
+  # A single day needs no quotes or brackets. Use "" to sync every day.
+  skip_days: 6

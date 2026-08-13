@@ -154,6 +154,23 @@ class TestNormalizeSkipDays:
     def test_empty_list(self):
         assert _normalize_skip_days([]) == []
 
+    def test_bare_int(self):
+        """`skip_days: 6` is what YAML gives for a single unquoted day."""
+        assert _normalize_skip_days(6) == ["6"]
+
+    def test_bare_zero_is_monday_not_empty(self):
+        """0 is falsy, so a truthiness check would silently drop Monday."""
+        assert _normalize_skip_days(0) == ["0"]
+
+    def test_list_containing_zero(self):
+        assert _normalize_skip_days([0, 6]) == ["0", "6"]
+
+    def test_string_zero(self):
+        assert _normalize_skip_days("0") == ["0"]
+
+    def test_tuple_input(self):
+        assert _normalize_skip_days((5, 6)) == ["5", "6"]
+
 
 # --- _calculate_future_date ---
 

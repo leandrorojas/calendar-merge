@@ -14,7 +14,7 @@ from tests.conftest import BA_TZ, FakeCalendarService, icloud_raw_event, ics_byt
 
 class TestCollectIcloudEvents:
     def test_collects_a_timed_event(self):
-        events = merge._collect_icloud_events([icloud_raw_event()], skip_days=[])
+        events = merge._collect_icloud_events([icloud_raw_event()])
 
         assert len(events) == 1
         event = events[0]
@@ -27,12 +27,12 @@ class TestCollectIcloudEvents:
     def test_keeps_the_raw_event_for_deletion(self):
         raw = icloud_raw_event()
 
-        events = merge._collect_icloud_events([raw], skip_days=[])
+        events = merge._collect_icloud_events([raw])
 
         assert events[0].full_event is raw
 
     def test_skips_all_day_events(self):
-        events = merge._collect_icloud_events([icloud_raw_event(all_day=True)], skip_days=[])
+        events = merge._collect_icloud_events([icloud_raw_event(all_day=True)])
 
         assert events == []
 
@@ -40,7 +40,7 @@ class TestCollectIcloudEvents:
         raw = icloud_raw_event()
         del raw[merge.ICLOUD_FIELD_ALL_DAY_EVENT]
 
-        assert merge._collect_icloud_events([raw], skip_days=[]) == []
+        assert merge._collect_icloud_events([raw]) == []
 
     @pytest.mark.parametrize(
         "missing",
@@ -55,31 +55,20 @@ class TestCollectIcloudEvents:
         raw = icloud_raw_event()
         raw[missing] = None
 
-        assert merge._collect_icloud_events([raw], skip_days=[]) == []
+        assert merge._collect_icloud_events([raw]) == []
 
-    def test_skips_events_on_skip_days(self):
-        # 2026-08-15 is a Saturday (weekday 5) in UTC.
-        raw = icloud_raw_event(start=(0, 2026, 8, 15, 9, 0), end=(0, 2026, 8, 15, 10, 0))
+    def test_does_not_filter_by_weekday(self):
+        """Collection is skip_days-agnostic now.
 
-        assert merge._collect_icloud_events([raw], skip_days=["5"]) == []
-
-    def test_keeps_events_not_on_skip_days(self):
-        raw = icloud_raw_event(start=(0, 2026, 8, 12, 9, 0), end=(0, 2026, 8, 12, 10, 0))
-
-        assert len(merge._collect_icloud_events([raw], skip_days=["5", "6"])) == 1
-
-    def test_skip_day_is_evaluated_in_utc(self):
-        """A late-evening local event can land on the next UTC day.
-
-        23:00 on Friday in Buenos Aires is 02:00 Saturday UTC, so skipping
-        Saturday must drop it.
+        skip_days is per source, so a Saturday event must survive collection and
+        be filtered later against the owning source's setting.
         """
-        raw = icloud_raw_event(start=(0, 2026, 8, 14, 23, 0), end=(0, 2026, 8, 15, 0, 0))
+        saturday = icloud_raw_event(start=(0, 2026, 8, 15, 9, 0), end=(0, 2026, 8, 15, 10, 0))
 
-        assert merge._collect_icloud_events([raw], skip_days=["5"]) == []
+        assert len(merge._collect_icloud_events([saturday])) == 1
 
     def test_handles_empty_input(self):
-        assert merge._collect_icloud_events([], skip_days=["5", "6"]) == []
+        assert merge._collect_icloud_events([]) == []
 
     def test_collects_multiple_events(self):
         raws = [
@@ -88,9 +77,47 @@ class TestCollectIcloudEvents:
             icloud_raw_event(title="c"),
         ]
 
-        titles = [event.title for event in merge._collect_icloud_events(raws, skip_days=[])]
+        titles = [event.title for event in merge._collect_icloud_events(raws)]
 
         assert titles == ["a", "c"]
+
+
+# --- _select_source_icloud_events ---
+
+
+class TestSelectSourceIcloudEvents:
+    def test_selects_only_matching_titles(self):
+        mine = merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), title="[W] Work/Google")
+        theirs = merge_event(utc(2026, 8, 12, 14), utc(2026, 8, 12, 15), title="[X] Other/Outlook")
+
+        selected = merge._select_source_icloud_events([mine, theirs], "[W] Work/Google", [])
+
+        assert selected == [mine]
+
+    def test_excludes_events_on_the_sources_skip_days(self):
+        # 2026-08-15 is a Saturday (weekday 5) in UTC.
+        saturday = merge_event(utc(2026, 8, 15, 12), utc(2026, 8, 15, 13), title="[W] Work/Google")
+        weekday = merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), title="[W] Work/Google")
+
+        selected = merge._select_source_icloud_events([saturday, weekday], "[W] Work/Google", ["5"])
+
+        assert selected == [weekday]
+
+    def test_keeps_weekend_events_when_source_does_not_skip_them(self):
+        saturday = merge_event(utc(2026, 8, 15, 12), utc(2026, 8, 15, 13), title="[W] Work/Google")
+
+        selected = merge._select_source_icloud_events([saturday], "[W] Work/Google", [])
+
+        assert selected == [saturday]
+
+    def test_weekday_is_evaluated_in_utc(self):
+        # 02:00 Saturday UTC, which is 23:00 Friday in Buenos Aires.
+        late_friday = merge_event(utc(2026, 8, 15, 2), utc(2026, 8, 15, 3), title="[W] Work/Google")
+
+        assert merge._select_source_icloud_events([late_friday], "[W] Work/Google", ["5"]) == []
+
+    def test_empty_input(self):
+        assert merge._select_source_icloud_events([], "[W] Work/Google", ["5", "6"]) == []
 
 
 # --- _is_free_time ---

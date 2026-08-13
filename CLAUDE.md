@@ -64,6 +64,22 @@ Single-file Python application (`src/merge.py`) that merges multiple ICS calenda
 
 **Date filtering:** `_calculate_future_date()` counts N non-skipped weekdays forward — so `future_events_days: 5` with weekends skipped may span 7+ calendar days.
 
+**skip_days is per source, future_events_days is global.** `config.skip_days` is the default;
+a `source-calendar-N` section may declare its own `skip_days` to override it, resolved by
+`_resolve_source_skip_days()`. `future_events_days` is global and is counted with the *global*
+skip_days, producing one date window shared by all sources — a per-source override selects
+weekdays within that window, it does not extend it.
+
+Because skip_days is per source, `_collect_icloud_events()` deliberately does **not** apply the
+weekday filter; it would have to pick one global value for a shared list. The filter lives in
+`_select_source_icloud_events()`, applied per source alongside the title match.
+
+**Reading optional per-source settings:** `YamlHelper.get()` raises `YamlError` for an absent
+setting, and `main()` treats a `YamlError` from a source as "no more source calendars" and breaks
+the loop. So an optional setting must be read through a helper that catches `YamlError` locally
+(see `_resolve_source_skip_days`), after a required setting has already proven the section exists.
+Reading one naively silently drops every calendar after the first that omits it — no error, no log.
+
 **Event transparency:** `_is_free_time()` skips a source VEVENT only when `TRANSP` is explicitly
 `TRANSPARENT`. A missing `TRANSP` defaults to `OPAQUE` per RFC 5545 and is kept. Do not
 reintroduce a "TRANSP is present → skip" check: Outlook stamps `TRANSP` on every event, so that

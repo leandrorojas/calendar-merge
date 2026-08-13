@@ -229,17 +229,76 @@ class TestLoadIcloudEvents:
         assert (cut_off.hour, cut_off.minute, cut_off.second) == (23, 59, 59)
         assert cut_off > today_bod
 
-    def test_skip_days_filter_reaches_event_collection(self):
-        # A Saturday event must be dropped when Saturday is skipped.
+    def test_collects_events_regardless_of_skip_days(self):
+        """Loading no longer applies the weekday filter.
+
+        skip_days is per source, so the global value must not prune the shared
+        iCloud event list -- a source that does not skip Saturday still needs to
+        see its Saturday events in order to reconcile them.
+        """
         saturday = icloud_raw_event(start=(0, 2026, 8, 15, 9, 0), end=(0, 2026, 8, 15, 10, 0))
         service = FakeCalendarService(events=[saturday])
 
         _, _, events, _, _, _ = merge._load_icloud_events(icloud_service(service), 5, ["5"])
 
-        assert events == []
+        assert len(events) == 1
+
+    def test_global_skip_days_still_shape_the_window(self):
+        # future_events_days stays global and counts only non-skipped days, so
+        # skipping the weekend stretches a 5-day window past 5 calendar days.
+        service = FakeCalendarService()
+
+        _, _, _, today_bod, cut_off_skipping, _ = merge._load_icloud_events(icloud_service(service), 5, ["5", "6"])
+        _, _, _, _, cut_off_plain, _ = merge._load_icloud_events(icloud_service(service), 5, [])
+
+        assert cut_off_skipping > cut_off_plain
+        assert (cut_off_plain - today_bod).days == 5
+
+
+# --- _resolve_source_skip_days ---
+
+
+class TestResolveSourceSkipDays:
+    def test_uses_the_sources_own_setting(self):
+        helper = FakeYamlHelper({(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS): "0, 6"})
+
+        assert merge._resolve_source_skip_days(helper, SOURCE_0, ["5", "6"]) == ["0", "6"]
+
+    def test_falls_back_to_the_global_default(self):
+        helper = FakeYamlHelper({})
+
+        assert merge._resolve_source_skip_days(helper, SOURCE_0, ["5", "6"]) == ["5", "6"]
+
+    def test_normalizes_a_list_value(self):
+        helper = FakeYamlHelper({(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS): [5, 6]})
+
+        assert merge._resolve_source_skip_days(helper, SOURCE_0, []) == ["5", "6"]
+
+    def test_empty_override_means_skip_nothing(self):
+        """An explicit empty value must override, not fall through to the global."""
+        helper = FakeYamlHelper({(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS): ""})
+
+        assert merge._resolve_source_skip_days(helper, SOURCE_0, ["5", "6"]) == []
+
+    def test_does_not_leak_yaml_error(self):
+        """A missing optional setting must not raise.
+
+        main() treats a YamlError from a source as "no more source calendars", so
+        letting this escape would silently drop every calendar after the first one
+        that omits skip_days.
+        """
+        helper = FakeYamlHelper({})
+
+        merge._resolve_source_skip_days(helper, SOURCE_0, [])  # must not raise
 
 
 # --- _process_source_calendar ---
+
+# 2026-08-14 is a Friday, 2026-08-15 a Saturday (weekday 5).
+FRIDAY_AND_SATURDAY = (
+    {"start": "20260814T120000Z", "end": "20260814T130000Z"},
+    {"start": "20260815T120000Z", "end": "20260815T130000Z"},
+)
 
 
 def process(
@@ -254,6 +313,7 @@ def process(
     download_error=None,
     ics_payload=None,
     index=0,
+    default_skip_days=(),
 ):
     values = config_values()
     values.update(source_values(index=index))
@@ -270,7 +330,7 @@ def process(
         index,
         fs,
         datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
-        [],
+        list(default_skip_days),
         utc(2026, 8, 1),
         utc(2026, 8, 31, 23, 59),
         icloud_events if icloud_events is not None else [],
@@ -380,6 +440,108 @@ class TestProcessSourceCalendar:
         # The foreign-tagged event must not be deleted by this source's run.
         assert service.removed == []
 
+    def test_per_source_skip_days_filters_the_feed(self, monkeypatch, tmp_path):
+        """A source that skips Saturday must not import its Saturday events."""
+        values = config_values()
+        values.update(source_values())
+        values[(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS)] = "5"
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            yaml_values=values,
+            ics_events=FRIDAY_AND_SATURDAY,
+            default_skip_days=[],  # global skips nothing
+        )
+
+        assert len(service.added) == 1
+        assert service.added[0].start_date.day == 14
+
+    def test_falls_back_to_global_skip_days(self, monkeypatch, tmp_path):
+        values = config_values()
+        values.update(source_values())  # source declares no override
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            yaml_values=values,
+            ics_events=FRIDAY_AND_SATURDAY,
+            default_skip_days=["5"],  # global skips Saturday
+        )
+
+        assert len(service.added) == 1
+        assert service.added[0].start_date.day == 14
+
+    def test_source_can_opt_out_of_the_global_skip(self, monkeypatch, tmp_path):
+        values = config_values()
+        values.update(source_values())
+        values[(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS)] = ""  # this source syncs every day
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            yaml_values=values,
+            ics_events=[{"start": "20260815T120000Z", "end": "20260815T130000Z"}],  # Saturday
+            default_skip_days=["5", "6"],  # global skips the weekend
+        )
+
+        assert len(service.added) == 1
+
+    def test_per_source_skip_days_also_filters_the_icloud_side(self, monkeypatch, tmp_path):
+        """An iCloud event on a skipped day must be left alone, not deleted.
+
+        It is excluded from reconciliation, matching how the feed is filtered, so
+        it is neither matched nor removed.
+        """
+        values = config_values()
+        values.update(source_values())
+        values[(SOURCE_0, merge.YAML_SETTING_SKIP_DAYS)] = "5"
+
+        saturday_event = merge.MergeEvent(
+            title="[W] Google/Work",
+            start=utc(2026, 8, 15, 12),
+            end=utc(2026, 8, 15, 13),
+            full_event=icloud_raw_event(guid="sat-guid", pguid="p"),
+            action=None,
+        )
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            yaml_values=values,
+            ics_events=[],
+            icloud_events=[saturday_event],
+            default_skip_days=[],
+        )
+
+        assert service.removed == []
+
+    def test_icloud_event_is_deleted_when_source_does_not_skip_that_day(self, monkeypatch, tmp_path):
+        # Same setup as above but without the override, so Saturday is in scope
+        # and the orphaned event is reconciled away.
+        values = config_values()
+        values.update(source_values())
+
+        saturday_event = merge.MergeEvent(
+            title="[W] Google/Work",
+            start=utc(2026, 8, 15, 12),
+            end=utc(2026, 8, 15, 13),
+            full_event=icloud_raw_event(guid="sat-guid", pguid="p"),
+            action=None,
+        )
+
+        _, service = process(
+            monkeypatch,
+            tmp_path,
+            yaml_values=values,
+            ics_events=[],
+            icloud_events=[saturday_event],
+            default_skip_days=[],
+        )
+
+        assert len(service.removed) == 1
+        assert service.removed[0].guid == "sat-guid"
+
     def test_raises_on_missing_url(self, monkeypatch, tmp_path, quiet_terminal):
         with pytest.raises(RuntimeError, match="Missing calendar URL for index 0"):
             process(monkeypatch, tmp_path, url=None)
@@ -455,6 +617,54 @@ class TestMain:
         merge.main()
 
         assert spy.processed == [0, 1, 2]
+
+    def test_sources_omitting_skip_days_do_not_truncate_the_loop(self, monkeypatch, tmp_path, quiet_terminal):
+        """Regression guard for the optional-setting trap.
+
+        main() breaks out of the source loop on YamlError. YamlHelper raises
+        YamlError for an absent setting, so reading the optional per-source
+        skip_days without catching it would stop the loop at the first source that
+        omits it -- silently skipping every calendar after it, with no error.
+        """
+        processed = []
+        values = config_values()
+        for index in (0, 1, 2):
+            values.update(source_values(index=index))
+        # Only the middle source overrides skip_days; 0 and 2 omit it.
+        values[(SOURCE_1, merge.YAML_SETTING_SKIP_DAYS)] = "0"
+
+        helper = FakeYamlHelper(values)
+        monkeypatch.setattr(merge, "_load_config", lambda: (helper, 5, ["5", "6"], FakeFileSystem(tmp_path)))
+        monkeypatch.setattr(merge, "_authenticate_icloud", lambda: fake_api())
+        monkeypatch.setattr(
+            merge,
+            "_load_icloud_events",
+            lambda service, days, skip: (
+                FakeCalendarService(),
+                "cal-guid",
+                [],
+                utc(2026, 8, 12),
+                utc(2026, 8, 20, 23, 59),
+                datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
+            ),
+        )
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: None)
+
+        real_resolve = merge._resolve_source_skip_days
+
+        def tracking_process(yaml_helper, index, fs, now, default_skip_days, *args, **kwargs):
+            section = merge.YAML_SECTION_SOURCE_CALENDAR.format(index=index)
+            # Raises YamlError for a genuinely absent section, ending the loop.
+            yaml_helper.get(section, merge.YAML_SETTING_CALENDAR_SOURCE)
+            processed.append((index, real_resolve(yaml_helper, section, default_skip_days)))
+
+        monkeypatch.setattr(merge, "_process_source_calendar", tracking_process)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        merge.main()
+
+        assert [index for index, _ in processed] == [0, 1, 2]
+        assert dict(processed) == {0: ["5", "6"], 1: ["0"], 2: ["5", "6"]}
 
     def test_stops_cleanly_when_no_calendars_configured(self, monkeypatch, tmp_path, quiet_terminal):
         spy = FlowSpy(source_count=0).install(monkeypatch, tmp_path)
