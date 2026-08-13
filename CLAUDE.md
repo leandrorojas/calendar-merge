@@ -121,6 +121,59 @@ series at their original start date, so long-running weekly meetings can contrib
 forward-looking window. Expanding them needs RRULE handling plus `EXDATE`/`RECURRENCE-ID`
 overrides.
 
+**Timezone handling depends on the host, in two places — assessed, not yet fixed.**
+
+Internally the pipeline is already UTC-correct: source feeds and iCloud events are normalised with
+`convert_to_utc`, reconciliation compares UTC instants, and `skip_days` is evaluated on the event's
+UTC weekday. None of that depends on the host. Two edges do.
+
+*1. The write path sends wall-clock and timezone from different sources.* `_sync_events_to_icloud`
+converts to the per-source config `tz` (`merge_event.start.astimezone(calendar_tz)`), but
+`AppleDateFormat.from_datetime` **discards `tzinfo`** and sends only the bare
+year/month/day/hour/minute. `merge.py` never sets `EventObject.tz`, so pyicloud fills it in from the
+host:
+
+```python
+# pyicloud EventObject.__post_init__
+if not self.tz:
+    self.tz = get_localzone_name()
+```
+
+The numbers come from `config.yaml`, the label comes from the OS, and they only agree when the host
+zone equals the source's `tz`. Measured for one 12:00 UTC event with `tz: America/Argentina/Buenos_Aires`:
+
+| host zone | wall-clock sent | tz label sent | Apple stores |
+|---|---|---|---|
+| `America/Argentina/Buenos_Aires` | `09:00` | `America/Argentina/Buenos_Aires` | 09:00 BA ✅ |
+| `UTC` | `09:00` | `UTC` | 09:00 UTC = 06:00 BA ❌ |
+
+This is why the script effectively requires the host to be on Buenos Aires. Converting to UTC
+instead does not help: it changes the wall-clock but not the label, so the halves still disagree.
+
+**Suggested fix:** pass `tz=calendar_tz.key` when constructing `EventObject`. Verified to be a
+**no-op while the host is on Buenos Aires** and a correction on any other host, so it removes the
+hidden OS dependency without changing current behaviour.
+
+**Precondition before implementing:** confirm the host zone actually matches the configured `tz`
+(`timedatectl`). If it does not, already-synced events were written under the old scheme; changing
+the label shifts newly-written events, and since reconciliation matches on `(start, end)` that
+produces duplicates rather than corrections. A cleanup plan is needed in that case.
+
+*2. The sync window is anchored to host-local midnight.* `_load_icloud_events` uses
+`datetime.today()` (naive) for the iCloud fetch range and `datetime.now().astimezone()` for
+`today_bod`, so the window slides by the host's UTC offset — and on a far-east host the fetch range
+has already rolled to the next day:
+
+| host zone | UTC window |
+|---|---|
+| Buenos Aires | 08-13 03:00 → 08-19 02:59 |
+| UTC | 08-13 00:00 → 08-18 23:59 |
+| Tokyo | 08-13 15:00 → 08-19 14:59 |
+
+**Deliberately not changed.** Re-anchoring alters which events fall in range at day boundaries.
+The tool syncs two work calendars in one timezone into a shared family calendar, with no meetings
+crossing midnight, so the current anchoring is fine. Revisit only if participants span timezones.
+
 **2FA flow (pyicloud 2.5.0):** `api.request_2fa_code()` triggers the trusted-device push. The SMS fallback is explicitly disabled via `api._can_request_sms_2fa_code = lambda: False` because pyicloud's trusted-device bridge can time out waiting for the WebSocket return payload (while still successfully pushing the code to the device), which would otherwise switch the delivery method to `"sms"` and reject the trusted-device code at validation.
 
 ## Dependencies
