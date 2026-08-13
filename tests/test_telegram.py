@@ -179,6 +179,57 @@ class TestSendTelegramMessage:
         assert notifier.sent == [("loop path", False)]
 
 
+class TestUsableReplyText:
+    """Per-update filtering, extracted from the poll loop to cut its complexity."""
+
+    def test_returns_text_of_a_fresh_reply(self):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage("123456", date=mark + timedelta(seconds=1)))
+
+        assert merge._usable_reply_text(upd, mark, None) == "123456"
+
+    def test_ignores_update_without_a_message(self):
+        assert merge._usable_reply_text(FakeUpdate(1, None), datetime.now(UTC), None) is None
+
+    def test_ignores_message_without_text(self):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage(None, date=mark))
+
+        assert merge._usable_reply_text(upd, mark, None) is None
+
+    def test_ignores_reply_sent_before_the_prompt(self):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage("123456", date=mark - timedelta(minutes=5)))
+
+        assert merge._usable_reply_text(upd, mark, None) is None
+
+    def test_reads_a_naive_timestamp_as_utc(self):
+        mark = datetime.now(UTC)
+        naive = (mark + timedelta(seconds=1)).replace(tzinfo=None)
+        upd = FakeUpdate(1, FakeMessage("123456", date=naive))
+
+        assert merge._usable_reply_text(upd, mark, None) == "123456"
+
+    def test_ignores_reply_without_a_timestamp(self):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage("123456", date=None))
+
+        assert merge._usable_reply_text(upd, mark, None) is None
+
+    def test_applies_the_validator(self, quiet_terminal):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage("nope", date=mark + timedelta(seconds=1)))
+
+        assert merge._usable_reply_text(upd, mark, merge._is_two_factor_code) is None
+        assert any("not a 6-digit code" in line for line in quiet_terminal)
+
+    def test_accepts_a_reply_the_validator_allows(self):
+        mark = datetime.now(UTC)
+        upd = FakeUpdate(1, FakeMessage("123456", date=mark + timedelta(seconds=1)))
+
+        assert merge._usable_reply_text(upd, mark, merge._is_two_factor_code) == "123456"
+
+
 class TestPollTelegramUpdates:
     def test_returns_text_of_message_after_mark(self):
         mark = datetime.now(UTC)

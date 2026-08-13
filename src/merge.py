@@ -435,6 +435,30 @@ def prompt_telegram_reply(
         return None
 
 
+def _usable_reply_text(update, mark: datetime, accept: Callable[[str], bool] | None) -> str | None:
+    """Return the reply text of one update, or None if it should be ignored.
+
+    Skips updates without text, replies that predate *mark* (so an answer sent
+    before the prompt cannot be mistaken for this one), and anything *accept*
+    rejects. A naive timestamp is read as UTC, which is what Telegram sends.
+    """
+    msg = getattr(update, "message", None)
+    if not (msg and msg.text):
+        return None
+
+    msg_dt = msg.date
+    if msg_dt and msg_dt.tzinfo is None:
+        msg_dt = msg_dt.replace(tzinfo=UTC)
+    if not (msg_dt and msg_dt >= mark):
+        return None
+
+    if accept is not None and not accept(msg.text):
+        term.print(f"{get_tag(TAG_2F_AUTH)} ignoring reply that is not a 6-digit code", True)
+        return None
+
+    return msg.text
+
+
 async def _poll_telegram_updates(
     notifier: tg.TelegramNotifier,
     mark: datetime,
@@ -455,18 +479,9 @@ async def _poll_telegram_updates(
             continue
         offset = updates[-1].update_id + 1
         for upd in updates:
-            msg = getattr(upd, "message", None)
-            if not (msg and msg.text):
-                continue
-            msg_dt = msg.date
-            if msg_dt and msg_dt.tzinfo is None:
-                msg_dt = msg_dt.replace(tzinfo=UTC)
-            if not (msg_dt and msg_dt >= mark):
-                continue
-            if accept is not None and not accept(msg.text):
-                term.print(f"{get_tag(TAG_2F_AUTH)} ignoring reply that is not a 6-digit code", True)
-                continue
-            return msg.text
+            text = _usable_reply_text(upd, mark, accept)
+            if text is not None:
+                return text
 
     term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
     return None
