@@ -248,6 +248,30 @@ class TestPollTelegramUpdates:
         assert result == "late-code"
         assert slept == [1, 1]
 
+    def test_ignores_replies_the_validator_rejects(self, quiet_terminal):
+        """Chatter must not consume the prompt.
+
+        The first reply is not a code, so polling continues rather than handing
+        "what code?" back to be submitted to Apple.
+        """
+        mark = datetime.now(UTC)
+        batch = [
+            FakeUpdate(1, FakeMessage("what code?", date=mark + timedelta(seconds=1))),
+            FakeUpdate(2, FakeMessage("123456", date=mark + timedelta(seconds=2))),
+        ]
+        notifier = FakeNotifier(updates_batches=[batch])
+
+        result = run(merge._poll_telegram_updates(notifier, mark, 5, merge._is_two_factor_code))
+
+        assert result == "123456"
+        assert any("not a 6-digit code" in line for line in quiet_terminal)
+
+    def test_accepts_any_text_when_no_validator_given(self):
+        mark = datetime.now(UTC)
+        notifier = FakeNotifier(updates_batches=[[FakeUpdate(1, FakeMessage("anything", date=mark))]])
+
+        assert run(merge._poll_telegram_updates(notifier, mark, 5)) == "anything"
+
     def test_times_out_and_reports(self, quiet_terminal):
         notifier = FakeNotifier(updates_batches=[])
 
@@ -322,7 +346,7 @@ class TestWaitForTelegramReply:
     def test_uses_the_module_timeout_constant(self, telegram_configured, monkeypatch):
         seen: dict[str, object] = {}
 
-        async def spy(notifier, mark, timeout_seconds):
+        async def spy(notifier, mark, timeout_seconds, accept=None):
             seen["timeout"] = timeout_seconds
             return None
 
@@ -335,11 +359,41 @@ class TestWaitForTelegramReply:
         assert seen["timeout"] == merge.TELEGRAM_POLL_TIMEOUT_SECONDS
 
 
+class TestPromptTelegramReplyGuardsTransport:
+    def test_returns_none_when_telegram_raises(self, monkeypatch, quiet_terminal):
+        """Mirrors send_telegram_message rather than letting the error escape.
+
+        Unguarded, a flood-control response during 2FA surfaced as the generic
+        "2FA validation error" instead of a Telegram problem.
+        """
+
+        async def flood_control(prompt, after_send=None, accept=None):
+            raise RuntimeError("Flood control exceeded. Retry in 581 seconds")
+
+        monkeypatch.setattr(merge, "_wait_for_telegram_reply", flood_control)
+
+        assert merge.prompt_telegram_reply("give me the code") is None
+        assert any("Unexpected Telegram error: Flood control exceeded" in line for line in quiet_terminal)
+
+    def test_passes_the_validator_through(self, monkeypatch):
+        seen = {}
+
+        async def fake_wait(prompt, after_send=None, accept=None):
+            seen["accept"] = accept
+            return "123456"
+
+        monkeypatch.setattr(merge, "_wait_for_telegram_reply", fake_wait)
+
+        merge.prompt_telegram_reply("p", accept=merge._is_two_factor_code)
+
+        assert seen["accept"] is merge._is_two_factor_code
+
+
 class TestPromptTelegramReply:
     def test_delegates_to_wait_for_reply(self, monkeypatch):
         seen: dict[str, object] = {}
 
-        async def fake_wait(prompt, after_send=None):
+        async def fake_wait(prompt, after_send=None, accept=None):
             seen["prompt"] = prompt
             seen["after_send"] = after_send
             return "delegated"

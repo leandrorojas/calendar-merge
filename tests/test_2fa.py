@@ -2,6 +2,8 @@
 
 from collections.abc import Callable
 
+import pytest
+
 import merge
 from tests.conftest import fake_api
 
@@ -101,7 +103,7 @@ class TestValidate2faTrustedDevice:
     def test_disables_sms_fallback(self, monkeypatch):
         # pyicloud would otherwise switch delivery to SMS when the
         # trusted-device bridge times out, rejecting the pushed code.
-        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None: "123456")
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "123456")
         api = fake_api(requires_2fa=True)
 
         merge._validate_2fa_trusted_device(api)
@@ -109,7 +111,7 @@ class TestValidate2faTrustedDevice:
         assert api._can_request_sms_2fa_code() is False
 
     def test_returns_false_when_no_code_arrives(self, monkeypatch, quiet_terminal):
-        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None: None)
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: None)
         api = fake_api(requires_2fa=True)
 
         assert merge._validate_2fa_trusted_device(api) is False
@@ -124,13 +126,13 @@ class TestValidate2faTrustedDevice:
 
         api = fake_api(requires_2fa=True)
         api.validate_2fa_code = record_code
-        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None: "654321")
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "654321")
 
         assert merge._validate_2fa_trusted_device(api) is True
         assert seen["code"] == "654321"
 
     def test_reports_rejected_code(self, monkeypatch, quiet_terminal):
-        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None: "000000")
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "000000")
         api = fake_api(requires_2fa=True, validate_result=False)
 
         assert merge._validate_2fa_trusted_device(api) is False
@@ -143,7 +145,7 @@ class TestValidate2faTrustedDevice:
         api = fake_api(requires_2fa=True)
         api.request_2fa_code = lambda: requested.append(True)
 
-        def fake_prompt(prompt, after_send=None):
+        def fake_prompt(prompt, after_send=None, accept=None):
             after_send()
             return "111111"
 
@@ -161,7 +163,7 @@ class TestValidate2faTrustedDevice:
 
         api.request_2fa_code = boom
 
-        def fake_prompt(prompt, after_send=None):
+        def fake_prompt(prompt, after_send=None, accept=None):
             after_send()
             return "222222"
 
@@ -170,6 +172,149 @@ class TestValidate2faTrustedDevice:
         # A failed push must not abort the flow: the code often still arrives.
         assert merge._validate_2fa_trusted_device(api) is True
         assert any("2FA request warning: bridge timeout" in line for line in quiet_terminal)
+
+
+class TestIsTwoFactorCode:
+    @pytest.mark.parametrize("value", ["123456", "000000", " 123456 ", "123456\n"])
+    def test_accepts_six_digits(self, value):
+        assert merge._is_two_factor_code(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["12345", "1234567", "12345a", "ok", "", "what code?", "123 456", "-12345"],
+    )
+    def test_rejects_anything_else(self, value):
+        """Chatter must not be submitted to Apple as the code."""
+        assert merge._is_two_factor_code(value) is False
+
+
+class TestValidateTwoFactorCode:
+    def test_returns_true_when_apple_accepts(self, quiet_terminal):
+        api = fake_api(requires_2fa=True)
+
+        assert merge._validate_two_factor_code(api, "123456") is True
+
+    def test_returns_false_when_apple_rejects(self, quiet_terminal):
+        api = fake_api(requires_2fa=True, validate_result=False)
+
+        assert merge._validate_two_factor_code(api, "123456") is False
+        assert any("Failed to verify security code" in line for line in quiet_terminal)
+
+    def test_treats_a_raised_error_as_a_rejection(self, quiet_terminal):
+        """An expired code can raise rather than return False.
+
+        Aborting there would skip the retry loop entirely, so the error is
+        reported and counted as a failed attempt.
+        """
+        api = fake_api(requires_2fa=True)
+
+        def expired(code):
+            raise RuntimeError("code expired")
+
+        api.validate_2fa_code = expired
+
+        assert merge._validate_two_factor_code(api, "123456") is False
+        assert any("Code rejected by Apple: code expired" in line for line in quiet_terminal)
+
+    def test_coerces_a_truthy_non_bool_result(self, quiet_terminal):
+        api = fake_api(requires_2fa=True)
+        api.validate_2fa_code = lambda code: "yes"
+
+        assert merge._validate_two_factor_code(api, "123456") is True
+
+
+class TestTwoFactorRetries:
+    def test_retries_after_a_rejected_code(self, monkeypatch, quiet_terminal):
+        """A mistyped digit must not abort the whole merge."""
+        codes = iter(["111111", "222222", "333333"])
+        submitted = []
+
+        def accept_third(code):
+            submitted.append(code)
+            return code == "333333"
+
+        api = fake_api(requires_2fa=True)
+        api.validate_2fa_code = accept_third
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: next(codes))
+
+        assert merge._validate_2fa_trusted_device(api) is True
+        assert submitted == ["111111", "222222", "333333"]
+
+    def test_gives_up_after_the_attempt_limit(self, monkeypatch, quiet_terminal):
+        submitted: list[str] = []
+
+        def always_reject(code):
+            submitted.append(code)
+            return False
+
+        api = fake_api(requires_2fa=True, validate_result=False)
+        api.validate_2fa_code = always_reject
+        monkeypatch.setattr(merge, "prompt_telegram_reply", lambda prompt, after_send=None, accept=None: "000000")
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert len(submitted) == merge.TWO_FACTOR_CODE_ATTEMPTS
+        assert any(f"after {merge.TWO_FACTOR_CODE_ATTEMPTS} attempts" in line for line in quiet_terminal)
+
+    def test_requests_apples_push_only_once(self, monkeypatch, quiet_terminal):
+        """Re-requesting would issue a fresh code and invalidate the held one."""
+        requested = []
+        api = fake_api(requires_2fa=True, validate_result=False)
+        api.request_2fa_code = lambda: requested.append(True)
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            if after_send:
+                after_send()
+            return "000000"
+
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        merge._validate_2fa_trusted_device(api)
+
+        assert requested == [True]
+
+    def test_retry_prompt_explains_the_rejection(self, monkeypatch, quiet_terminal):
+        prompts = []
+        api = fake_api(requires_2fa=True, validate_result=False)
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            prompts.append(prompt)
+            return "000000"
+
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        merge._validate_2fa_trusted_device(api)
+
+        assert prompts[0] == "provide the Apple 2FA code"
+        assert "rejected" in prompts[1]
+        assert f"2/{merge.TWO_FACTOR_CODE_ATTEMPTS}" in prompts[1]
+
+    def test_does_not_retry_when_no_code_arrives(self, monkeypatch, quiet_terminal):
+        """A timeout means nobody is answering, so retrying is pointless."""
+        calls = []
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            calls.append(prompt)
+            return None
+
+        api = fake_api(requires_2fa=True)
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert len(calls) == 1
+
+    def test_passes_the_code_validator_to_the_prompt(self, monkeypatch, quiet_terminal):
+        seen = {}
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            seen["accept"] = accept
+            return "123456"
+
+        api = fake_api(requires_2fa=True)
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        merge._validate_2fa_trusted_device(api)
+
+        assert seen["accept"] is merge._is_two_factor_code
 
 
 class TestValidate2faFido2:
