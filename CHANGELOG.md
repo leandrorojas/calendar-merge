@@ -6,6 +6,8 @@ tagged in git.
 
 ## [Unreleased]
 
+## [v0.1.7] — 2026-08-13
+
 ### Added
 
 - `skip_days` can now be set per source calendar. A `source-calendar-N` section
