@@ -133,6 +133,27 @@ series at their original start date, so long-running weekly meetings can contrib
 forward-looking window. Expanding them needs RRULE handling plus `EXDATE`/`RECURRENCE-ID`
 overrides.
 
+**2FA code entry over Telegram.** `_validate_2fa_trusted_device` retries the prompt up to
+`TWO_FACTOR_CODE_ATTEMPTS` times, because a human types the code and one mistyped digit used to
+abort the whole merge until the next scheduled run. Three rules matter:
+
+- **Apple's push fires only on the first attempt.** `after_send` is passed on attempt 1 and `None`
+  afterwards; re-requesting issues a fresh code and invalidates the one the user is holding.
+- **A timeout does not retry.** `prompt_telegram_reply` returning `None` means nobody is answering
+  or the transport is broken, so the loop returns immediately instead of burning attempts.
+- **A raised error counts as a rejection.** pyicloud returns `False` for a wrong code but can raise
+  for an expired one. `_validate_two_factor_code` catches it so the retry loop survives; letting it
+  escape relabels a bad code as the generic `"2FA validation error"`.
+
+Replies are filtered by `_is_two_factor_code` (six digits) before being submitted. Without it,
+`_poll_telegram_updates` returned the first text message after the prompt, so `"ok"` — or anyone
+else speaking in the chat — was sent to Apple as the code. The predicate is injected through
+`prompt_telegram_reply` → `_wait_for_telegram_reply` → `_poll_telegram_updates` so the transport
+stays generic; passing no predicate accepts any text.
+
+`prompt_telegram_reply` swallows transport errors the same way `send_telegram_message` does. It did
+not, and a flood-control response during 2FA surfaced as a 2FA failure rather than a Telegram one.
+
 **2FA flow (pyicloud 2.5.0):** `api.request_2fa_code()` triggers the trusted-device push. The SMS fallback is explicitly disabled via `api._can_request_sms_2fa_code = lambda: False` because pyicloud's trusted-device bridge can time out waiting for the WebSocket return payload (while still successfully pushing the code to the device), which would otherwise switch the delivery method to `"sms"` and reject the trusted-device code at validation.
 
 ## Dependencies
