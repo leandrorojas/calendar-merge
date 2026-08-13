@@ -6,6 +6,26 @@ tagged in git.
 
 ## [Unreleased]
 
+### Changed
+
+- The 2FA code prompt is retried up to three times instead of aborting the merge
+  on the first rejected code. Apple's push is requested only on the first
+  attempt, since re-requesting invalidates the code the user is holding, and a
+  timeout still returns immediately rather than burning attempts.
+
+### Fixed
+
+- Telegram replies are now validated as six-digit codes before being submitted to
+  Apple. Previously the first text message after the prompt was used, so `ok` — or
+  anyone else speaking in the chat — was sent as the code and failed the run.
+  Non-matching replies are ignored while polling continues.
+- An expired code no longer escapes the retry loop. pyicloud returns `False` for a
+  wrong code but can raise for an expired one, which was relabelled as the generic
+  `2FA validation error`; it is now treated as a rejection.
+- `prompt_telegram_reply` swallows transport errors like `send_telegram_message`
+  already did. A flood-control response during 2FA was reported as a 2FA failure
+  rather than a Telegram problem.
+
 ### Fixed
 
 - A calendar listing two meetings in the same slot no longer syncs two events.

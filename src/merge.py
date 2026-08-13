@@ -85,6 +85,13 @@ ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 # from hanging indefinitely when Telegram is flood-controlled or the user is away.
 TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+# Apple sends a six-digit code. Replies that do not look like one are ignored
+# rather than submitted, so ordinary chatter in the Telegram chat cannot burn an
+# attempt. A mistyped code gets more than one try because a human is in the loop
+# and the alternative is aborting the whole merge until the next scheduled run.
+TWO_FACTOR_CODE_ATTEMPTS = 3
+_TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
+
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
 DEFAULT_LOG_LEVEL = "INFO"
@@ -176,6 +183,36 @@ def _validate_2fa_fido2(api: PyiCloudService) -> bool:
     return True
 
 
+def _is_two_factor_code(text: str) -> bool:
+    """Return True when a Telegram reply looks like an Apple 2FA code."""
+    return bool(_TWO_FACTOR_CODE_PATTERN.match(text.strip()))
+
+
+def _validate_two_factor_code(api: PyiCloudService, code: str) -> bool:
+    """Submit a code to Apple, treating a raised error as a rejection.
+
+    The code is stripped first. `_is_two_factor_code` accepts surrounding
+    whitespace, and Telegram clients readily append a trailing newline, so
+    submitting the raw text would have Apple reject a reply that was accepted as
+    valid here.
+
+    pyicloud returns False for a wrong code but can raise for an expired one.
+    Both mean "this code did not work", and both should leave the retry loop
+    intact rather than aborting the merge, so the error is reported and counted
+    as a failed attempt.
+    """
+    try:
+        result = api.validate_2fa_code(code.strip())
+    except Exception as err:
+        print_step(TAG_2F_AUTH, f"Code rejected by Apple: {err}", one_liner=True)
+        return False
+
+    print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
+    if not result:
+        print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
+    return bool(result)
+
+
 def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
     """Handle trusted-device 2FA code flow via Telegram. Returns True on success."""
     print_step(TAG_2F_AUTH, "Two-factor authentication required.", one_liner=True)
@@ -194,16 +231,28 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
         print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
         print_step(TAG_2F_AUTH, "waiting for 2FA code via Telegram...", one_liner=True)
 
-    code = prompt_telegram_reply("provide the Apple 2FA code", after_send=_request_2fa)
-    if not code:
-        print_step(TAG_2F_AUTH, "No code received from Telegram", one_liner=True)
-        return False
+    for attempt in range(1, TWO_FACTOR_CODE_ATTEMPTS + 1):
+        # Apple's push is triggered once. Re-requesting on a retry would issue a
+        # fresh code and invalidate the one the user is already holding.
+        if attempt == 1:
+            prompt = "provide the Apple 2FA code"
+            after_send: Callable[[], None] | None = _request_2fa
+        else:
+            prompt = f"that code was rejected, send the Apple 2FA code again ({attempt}/{TWO_FACTOR_CODE_ATTEMPTS})"
+            after_send = None
 
-    result = api.validate_2fa_code(code)
-    print_step(TAG_2F_AUTH, f"Code validation result: {result}", one_liner=True)
-    if not result:
-        print_step(TAG_2F_AUTH, "Failed to verify security code", one_liner=True)
-    return result
+        code = prompt_telegram_reply(prompt, after_send=after_send, accept=_is_two_factor_code)
+        if not code:
+            # Timed out or Telegram failed. Retrying will not help: either nobody
+            # is there to answer, or the transport is broken.
+            print_step(TAG_2F_AUTH, "No code received from Telegram", one_liner=True)
+            return False
+
+        if _validate_two_factor_code(api, code):
+            return True
+
+    print_step(TAG_2F_AUTH, f"Failed to verify security code after {TWO_FACTOR_CODE_ATTEMPTS} attempts", one_liner=True)
+    return False
 
 
 def _validate_2fa_2sa(api: PyiCloudService) -> bool:
@@ -368,12 +417,59 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
             await _close_notifier(notifier)
 
 
-def prompt_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
-    return asyncio.run(_wait_for_telegram_reply(prompt, after_send))
+def prompt_telegram_reply(
+    prompt: str,
+    after_send: Callable[[], None] | None = None,
+    accept: Callable[[str], bool] | None = None,
+) -> str | None:
+    """Send a prompt over Telegram and wait for a reply, or None.
+
+    Mirrors send_telegram_message in swallowing transport errors: a flood-control
+    response or a network blip is reported as a Telegram problem rather than
+    bubbling up to be relabelled as a 2FA failure by the caller.
+    """
+    try:
+        return asyncio.run(_wait_for_telegram_reply(prompt, after_send, accept))
+    except Exception as err:
+        term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+        return None
 
 
-async def _poll_telegram_updates(notifier: tg.TelegramNotifier, mark: datetime, timeout_seconds: int) -> str | None:
-    """Poll for a new text message arriving after *mark*, with timeout."""
+def _usable_reply_text(update, mark: datetime, accept: Callable[[str], bool] | None) -> str | None:
+    """Return the reply text of one update, or None if it should be ignored.
+
+    Skips updates without text, replies that predate *mark* (so an answer sent
+    before the prompt cannot be mistaken for this one), and anything *accept*
+    rejects. A naive timestamp is read as UTC, which is what Telegram sends.
+    """
+    msg = getattr(update, "message", None)
+    if not (msg and msg.text):
+        return None
+
+    msg_dt = msg.date
+    if msg_dt and msg_dt.tzinfo is None:
+        msg_dt = msg_dt.replace(tzinfo=UTC)
+    if not (msg_dt and msg_dt >= mark):
+        return None
+
+    if accept is not None and not accept(msg.text):
+        term.print(f"{get_tag(TAG_2F_AUTH)} ignoring reply that is not a 6-digit code", True)
+        return None
+
+    return msg.text
+
+
+async def _poll_telegram_updates(
+    notifier: tg.TelegramNotifier,
+    mark: datetime,
+    timeout_seconds: int,
+    accept: Callable[[str], bool] | None = None,
+) -> str | None:
+    """Poll for a new text message arriving after *mark*, with timeout.
+
+    When *accept* is given, replies it rejects are ignored and polling continues,
+    so unrelated chatter in the group does not get submitted as the answer.
+    """
     offset = None
     deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
     while datetime.now(UTC) < deadline:
@@ -383,20 +479,19 @@ async def _poll_telegram_updates(notifier: tg.TelegramNotifier, mark: datetime, 
             continue
         offset = updates[-1].update_id + 1
         for upd in updates:
-            msg = getattr(upd, "message", None)
-            if not (msg and msg.text):
-                continue
-            msg_dt = msg.date
-            if msg_dt and msg_dt.tzinfo is None:
-                msg_dt = msg_dt.replace(tzinfo=UTC)
-            if msg_dt and msg_dt >= mark:
-                return msg.text
+            text = _usable_reply_text(upd, mark, accept)
+            if text is not None:
+                return text
 
     term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
     return None
 
 
-async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] | None = None) -> str | None:
+async def _wait_for_telegram_reply(
+    prompt: str,
+    after_send: Callable[[], None] | None = None,
+    accept: Callable[[str], bool] | None = None,
+) -> str | None:
     creds = await _get_telegram_credentials()
     if creds is None:
         return None
@@ -409,7 +504,7 @@ async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] |
         await _send_via_notifier(notifier, prompt)
         if after_send:
             after_send()
-        return await _poll_telegram_updates(notifier, mark, TELEGRAM_POLL_TIMEOUT_SECONDS)
+        return await _poll_telegram_updates(notifier, mark, TELEGRAM_POLL_TIMEOUT_SECONDS, accept)
 
     if hasattr(notifier_factory, "__aenter__"):
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:

@@ -183,6 +183,16 @@ uv run calendar-merge --last
 
 During the first execution you will be prompted for iCloud two-factor authentication: a 6-digit code is pushed to your trusted Apple devices, and the script sends a Telegram message asking you to reply with the code. Subsequent runs reuse the trusted session when possible.
 
+A few details of that exchange:
+
+- **Only a 6-digit reply is accepted.** Anything else is ignored and the script keeps waiting, so
+  ordinary conversation in the chat won't be mistaken for your code.
+- **You get three attempts.** A rejected code is re-prompted rather than failing the whole run.
+  Apple's code is only pushed once, on the first attempt — the retries reuse the same code, so
+  don't wait for a new one.
+- **You have 5 minutes.** After that the run gives up, and it won't retry because nobody is
+  answering. The next scheduled run will ask again.
+
 ### Scheduling
 
 To keep your calendars in sync automatically, hook the command into your scheduler of choice (e.g., `cron`, launchd, Windows Task Scheduler). Make sure the job runs under a user session that has the required iCloud authentication.
