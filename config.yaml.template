@@ -31,4 +31,5 @@ source-calendar-1:
   title: "Work Calendar"
   tz: "America/Argentina/Buenos_Aires"
   # This calendar also syncs Saturdays, unlike the global default.
-  skip_days: 6
+  # Quote single values so YAML keeps them as text rather than a number.
+  skip_days: "6"

@@ -412,9 +412,22 @@ async def _wait_for_telegram_reply(prompt: str, after_send: Callable[[], None] |
 
 
 def _normalize_skip_days(skip_days) -> list[str]:
+    """Coerce a configured skip_days value into a list of weekday strings.
+
+    Accepts what YAML actually produces: "5, 6" and "0,6" (plain scalars), a
+    sequence like [5, 6], a bare scalar like `skip_days: 6`, and None or an empty
+    value for "skip nothing".
+
+    A bare scalar has to be wrapped rather than tested for truthiness, because
+    `skip_days: 0` means Monday and would otherwise be discarded as falsy.
+    """
+    if skip_days is None:
+        return []
     if isinstance(skip_days, str):
         skip_days = [day.strip() for day in skip_days.split(",") if day.strip()]
-    return [str(day) for day in (skip_days or [])]
+    elif not isinstance(skip_days, list | tuple | set):
+        skip_days = [skip_days]
+    return [str(day) for day in skip_days]
 
 
 def _resolve_source_skip_days(yaml_helper: YamlHelper, section: str, default_skip_days: list[str]) -> list[str]:
