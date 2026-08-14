@@ -41,24 +41,72 @@ class TestValidate2faRouting:
         assert merge.validate_2fa(api) is True
         assert calls == ["device"]
 
-    def test_trusted_device_failure_short_circuits(self, monkeypatch):
-        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
+    def test_still_requests_trust_when_validation_fails(self, monkeypatch, quiet_terminal):
+        """Trust is attempted even after a rejected code, and the run still fails.
+
+        Apple can refuse a code while still granting trust. Skipping the request
+        made the run honest but threw away that recovery, so every later run
+        prompted again.
+        """
         trust_calls = []
-        monkeypatch.setattr(merge, "_request_session_trust", lambda api: trust_calls.append(api))
+
+        def record_trust(api):
+            trust_calls.append(api)
+            return False
+
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
+        monkeypatch.setattr(merge, "_request_session_trust", record_trust)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda *a, **k: None)
         api = fake_api(requires_2fa=True)
 
         assert merge.validate_2fa(api) is False
-        # Trust must not be requested when validation failed.
-        assert trust_calls == []
+        assert trust_calls == [api]
+
+    def test_reports_when_trust_survives_a_failed_code(self, monkeypatch, quiet_terminal):
+        """The failure alert alone reads as "nothing was achieved"."""
+        sent = []
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
+        monkeypatch.setattr(merge, "_request_session_trust", lambda api: True)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        api = fake_api(requires_2fa=True)
+
+        assert merge.validate_2fa(api) is False
+        assert sent == [merge.TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE]
+        assert any("next run should not prompt" in line for line in quiet_terminal)
+
+    def test_stays_quiet_when_both_code_and_trust_fail(self, monkeypatch, quiet_terminal):
+        sent = []
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
+        monkeypatch.setattr(merge, "_request_session_trust", lambda api: False)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        api = fake_api(requires_2fa=True)
+
+        assert merge.validate_2fa(api) is False
+        assert sent == []
 
     def test_requests_session_trust_after_success(self, monkeypatch):
-        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: True)
         trust_calls = []
-        monkeypatch.setattr(merge, "_request_session_trust", lambda api: trust_calls.append(api))
+
+        def record_trust(api):
+            trust_calls.append(api)
+            return True
+
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: True)
+        monkeypatch.setattr(merge, "_request_session_trust", record_trust)
         api = fake_api(requires_2fa=True)
 
         assert merge.validate_2fa(api) is True
         assert trust_calls == [api]
+
+    def test_success_does_not_send_the_trusted_after_failure_message(self, monkeypatch, quiet_terminal):
+        sent = []
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: True)
+        monkeypatch.setattr(merge, "_request_session_trust", lambda api: True)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        api = fake_api(requires_2fa=True)
+
+        assert merge.validate_2fa(api) is True
+        assert merge.TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE not in sent
 
     def test_routes_to_2sa_when_only_2sa_required(self, monkeypatch):
         calls: list[str] = []
@@ -97,6 +145,25 @@ class TestRequestSessionTrust:
         merge._request_session_trust(api)
 
         assert any("Failed to request trust" in line for line in quiet_terminal)
+
+    def test_returns_true_when_already_trusted(self, quiet_terminal):
+        assert merge._request_session_trust(fake_api(is_trusted_session=True)) is True
+
+    def test_returns_true_when_trust_is_granted(self, quiet_terminal):
+        api = fake_api(is_trusted_session=False, trust_result=True)
+
+        assert merge._request_session_trust(api) is True
+
+    def test_returns_false_when_trust_is_refused(self, quiet_terminal):
+        api = fake_api(is_trusted_session=False, trust_result=False)
+
+        assert merge._request_session_trust(api) is False
+
+    def test_coerces_a_truthy_non_bool_trust_result(self, quiet_terminal):
+        api = fake_api(is_trusted_session=False)
+        api.trust_session = lambda: "yes"
+
+        assert merge._request_session_trust(api) is True
 
 
 class TestValidate2faTrustedDevice:
@@ -307,6 +374,49 @@ class TestTwoFactorRetries:
         assert prompts[0] == "provide the Apple 2FA code"
         assert "rejected" in prompts[1]
         assert f"2/{merge.TWO_FACTOR_CODE_ATTEMPTS}" in prompts[1]
+
+    def test_does_not_retry_when_apples_push_failed(self, monkeypatch, quiet_terminal):
+        """The 2026-07-30 failure mode: the bridge never bootstrapped.
+
+        With nothing for validate_2fa_code() to check against, no code can ever
+        succeed, so retrying just makes the user type doomed codes. One prompt,
+        then stop.
+        """
+        prompts = []
+        api = fake_api(requires_2fa=True, validate_result=False)
+
+        def bridge_down():
+            raise RuntimeError("Failed to bootstrap the trusted-device bridge")
+
+        api.request_2fa_code = bridge_down
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            prompts.append(prompt)
+            if after_send:
+                after_send()
+            return "123456"
+
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert len(prompts) == 1
+        assert any("Apple never sent a code" in line for line in quiet_terminal)
+
+    def test_still_retries_when_the_push_succeeded(self, monkeypatch, quiet_terminal):
+        """A plain wrong code must keep its retries."""
+        prompts = []
+        api = fake_api(requires_2fa=True, validate_result=False)
+
+        def fake_prompt(prompt, after_send=None, accept=None):
+            prompts.append(prompt)
+            if after_send:
+                after_send()
+            return "000000"
+
+        monkeypatch.setattr(merge, "prompt_telegram_reply", fake_prompt)
+
+        assert merge._validate_2fa_trusted_device(api) is False
+        assert len(prompts) == merge.TWO_FACTOR_CODE_ATTEMPTS
 
     def test_does_not_retry_when_no_code_arrives(self, monkeypatch, quiet_terminal):
         """A timeout means nobody is answering, so retrying is pointless."""

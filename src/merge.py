@@ -98,6 +98,13 @@ _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 # could claim success for a key confirmation that actually failed.
 TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted"
 
+# The run still fails, but the failure alert on its own is misleading when trust
+# was established anyway: it looks like nothing was achieved when in fact the next
+# run will not need a code.
+TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE = (
+    "⚠️ Apple 2FA code was not accepted, but the session is now trusted — the next run should not prompt"
+)
+
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
 DEFAULT_LOG_LEVEL = "INFO"
@@ -227,11 +234,18 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
     # WebSocket times out — we want trusted-device-only validation.
     api._can_request_sms_2fa_code = lambda: False
 
+    # Recorded by the closure so the retry loop can tell whether Apple ever sent a
+    # code. A failed bootstrap of the trusted-device bridge leaves nothing for
+    # validate_2fa_code() to check against, so no code can succeed and re-prompting
+    # only makes the user type doomed codes.
+    push_failure: list[Exception] = []
+
     def _request_2fa():
         print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
         try:
             api.request_2fa_code()
         except Exception as err:
+            push_failure.append(err)
             print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
         delivery = getattr(api, "two_factor_delivery_method", "unknown")
         print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
@@ -261,6 +275,14 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
             send_telegram_message(TELEGRAM_2FA_ACCEPTED_MESSAGE)
             return True
 
+        if push_failure:
+            print_step(
+                TAG_2F_AUTH,
+                f"Apple never sent a code ({push_failure[0]}), so no code can be validated; not retrying",
+                one_liner=True,
+            )
+            return False
+
     print_step(TAG_2F_AUTH, f"Failed to verify security code after {TWO_FACTOR_CODE_ATTEMPTS} attempts", one_liner=True)
     return False
 
@@ -289,29 +311,54 @@ def _validate_2fa_2sa(api: PyiCloudService) -> bool:
     return True
 
 
-def _request_session_trust(api: PyiCloudService) -> None:
-    """Request session trust after 2FA validation if needed."""
-    if not api.is_trusted_session:
-        print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
-        result = api.trust_session()
-        print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
-        if not result:
-            print_step(
-                TAG_2F_AUTH,
-                "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
-                one_liner=True,
-            )
+def _request_session_trust(api: PyiCloudService) -> bool:
+    """Request session trust if needed. Returns True when the session is trusted.
+
+    The result is returned rather than only printed so the caller can tell the
+    user that a run which failed code validation still established trust, and
+    that the next run should therefore not prompt.
+    """
+    if api.is_trusted_session:
+        return True
+
+    print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
+    result = bool(api.trust_session())
+    print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
+    if not result:
+        print_step(
+            TAG_2F_AUTH,
+            "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
+            one_liner=True,
+        )
+    return result
 
 
 def validate_2fa(api: PyiCloudService) -> bool:
     if api.requires_2fa:
         if api.security_key_names:
+            # _validate_2fa_fido2 always reports success; its result has never
+            # been checked here and changing that is out of scope.
             _validate_2fa_fido2(api)
+            validated = True
         else:
-            if not _validate_2fa_trusted_device(api):
-                return False
-        _request_session_trust(api)
-        return True
+            validated = _validate_2fa_trusted_device(api)
+
+        # Attempted even when validation failed. Apple can refuse a code while
+        # still granting trust -- observed on 2026-07-30, when the trusted-device
+        # bridge failed to bootstrap so no code could validate, yet trust_session()
+        # succeeded and the following run needed no 2FA at all. Skipping this made
+        # the run honest but cost that recovery, so every later run prompted again.
+        trusted = _request_session_trust(api)
+
+        if not validated and trusted:
+            print_step(
+                TAG_2F_AUTH,
+                "Code validation failed but the session is now trusted; the next run should not prompt",
+                one_liner=True,
+            )
+            send_telegram_message(TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE)
+
+        return validated
 
     if api.requires_2sa:
         return _validate_2fa_2sa(api)
