@@ -155,6 +155,18 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
+class SessionTrust(Enum):
+    """Outcome of a session-trust request.
+
+    `already_trusted` is kept distinct from `granted` so the caller never tells
+    the user that trust was just established when nothing was requested.
+    """
+
+    already_trusted = 0
+    granted = 1
+    refused = 2
+
+
 class EventAction(Enum):
     none = 0
     add = 1
@@ -234,18 +246,14 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
     # WebSocket times out — we want trusted-device-only validation.
     api._can_request_sms_2fa_code = lambda: False
 
-    # Recorded by the closure so the retry loop can tell whether Apple ever sent a
-    # code. A failed bootstrap of the trusted-device bridge leaves nothing for
-    # validate_2fa_code() to check against, so no code can succeed and re-prompting
-    # only makes the user type doomed codes.
-    push_failure: list[Exception] = []
-
     def _request_2fa():
         print_step(TAG_2F_AUTH, "requesting 2FA code from Apple...", one_liner=True)
         try:
             api.request_2fa_code()
         except Exception as err:
-            push_failure.append(err)
+            # Not fatal, and deliberately does not disable the retries: the bridge
+            # posts step0 (which makes Apple push the code) before the wait that
+            # times out, so the user often has a valid code despite this error.
             print_step(TAG_2F_AUTH, f"2FA request warning: {err}", one_liner=True)
         delivery = getattr(api, "two_factor_delivery_method", "unknown")
         print_step(TAG_2F_AUTH, f"delivery method: {delivery}", one_liner=True)
@@ -275,14 +283,6 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
             send_telegram_message(TELEGRAM_2FA_ACCEPTED_MESSAGE)
             return True
 
-        if push_failure:
-            print_step(
-                TAG_2F_AUTH,
-                f"Apple never sent a code ({push_failure[0]}), so no code can be validated; not retrying",
-                one_liner=True,
-            )
-            return False
-
     print_step(TAG_2F_AUTH, f"Failed to verify security code after {TWO_FACTOR_CODE_ATTEMPTS} attempts", one_liner=True)
     return False
 
@@ -311,29 +311,42 @@ def _validate_2fa_2sa(api: PyiCloudService) -> bool:
     return True
 
 
-def _request_session_trust(api: PyiCloudService) -> bool:
-    """Request session trust if needed. Returns True when the session is trusted.
+def _request_session_trust(api: PyiCloudService) -> SessionTrust:
+    """Request session trust if needed, reporting what actually happened.
 
-    The result is returned rather than only printed so the caller can tell the
-    user that a run which failed code validation still established trust, and
-    that the next run should therefore not prompt.
+    Three outcomes rather than a bool, because "was already trusted" must not be
+    reported to the user as "trust has just been established": `requires_2fa` is
+    true whenever `hsaChallengeRequired` is set, even on a trusted session, so a
+    run can prompt, fail, and find the session already trusted without anything
+    having changed.
     """
     if api.is_trusted_session:
-        return True
+        return SessionTrust.already_trusted
 
     print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
-    # Logged raw, coerced only for the decision: pyicloud returning something
-    # richer than a bool is worth seeing when diagnosing a flaky 2FA run.
-    trust_response = api.trust_session()
+    try:
+        # Logged raw, coerced only for the decision: pyicloud returning something
+        # richer than a bool is worth seeing when diagnosing a flaky 2FA run.
+        trust_response = api.trust_session()
+    except Exception as err:
+        # trust_session() only catches PyiCloudAPIResponseException and
+        # PyiCloud2FARequiredException, but _authenticate_with_token() raises
+        # PyiCloudFailedLoginException, which is neither. Letting that escape
+        # relabels an accurate "2FA validation failed" as the generic
+        # "2FA validation error" -- and this now runs on the failure path, where
+        # the session is least healthy.
+        print_step(TAG_2F_AUTH, f"Session trust request failed: {err}", one_liner=True)
+        return SessionTrust.refused
+
     print_step(TAG_2F_AUTH, f"Session trust result {trust_response}", one_liner=True)
-    result = bool(trust_response)
-    if not result:
+    if not trust_response:
         print_step(
             TAG_2F_AUTH,
             "Failed to request trust. You will likely be prompted for confirmation again in the coming weeks",
             one_liner=True,
         )
-    return result
+        return SessionTrust.refused
+    return SessionTrust.granted
 
 
 def validate_2fa(api: PyiCloudService) -> bool:
@@ -351,9 +364,12 @@ def validate_2fa(api: PyiCloudService) -> bool:
         # bridge failed to bootstrap so no code could validate, yet trust_session()
         # succeeded and the following run needed no 2FA at all. Skipping this made
         # the run honest but cost that recovery, so every later run prompted again.
-        trusted = _request_session_trust(api)
+        trust = _request_session_trust(api)
 
-        if not validated and trusted:
+        # Only a fresh grant is worth reporting: an already-trusted session did
+        # not stop this run from prompting, so promising the next one will be
+        # quiet would be a false reassurance.
+        if not validated and trust is SessionTrust.granted:
             print_step(
                 TAG_2F_AUTH,
                 "Code validation failed but the session is now trusted; the next run should not prompt",
