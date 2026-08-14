@@ -149,6 +149,24 @@ class TestRequestSessionTrust:
     def test_returns_true_when_already_trusted(self, quiet_terminal):
         assert merge._request_session_trust(fake_api(is_trusted_session=True)) is True
 
+    def test_does_not_re_request_trust_when_already_trusted(self, quiet_terminal):
+        """Guards the early return: an established session needs no new request."""
+        calls = []
+        api = fake_api(is_trusted_session=True)
+        api.trust_session = lambda: calls.append(True)
+
+        assert merge._request_session_trust(api) is True
+        assert calls == []
+        assert quiet_terminal == []
+
+    def test_logs_the_raw_trust_response(self, quiet_terminal):
+        """Coercing before logging would hide what pyicloud actually returned."""
+        api = fake_api(is_trusted_session=False)
+        api.trust_session = lambda: {"status": "granted"}
+
+        assert merge._request_session_trust(api) is True
+        assert any("Session trust result {'status': 'granted'}" in line for line in quiet_terminal)
+
     def test_returns_true_when_trust_is_granted(self, quiet_terminal):
         api = fake_api(is_trusted_session=False, trust_result=True)
 

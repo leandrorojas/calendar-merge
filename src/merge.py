@@ -322,8 +322,11 @@ def _request_session_trust(api: PyiCloudService) -> bool:
         return True
 
     print_step(TAG_2F_AUTH, "Session is not trusted. Requesting trust...", one_liner=True)
-    result = bool(api.trust_session())
-    print_step(TAG_2F_AUTH, f"Session trust result {result}", one_liner=True)
+    # Logged raw, coerced only for the decision: pyicloud returning something
+    # richer than a bool is worth seeing when diagnosing a flaky 2FA run.
+    trust_response = api.trust_session()
+    print_step(TAG_2F_AUTH, f"Session trust result {trust_response}", one_liner=True)
+    result = bool(trust_response)
     if not result:
         print_step(
             TAG_2F_AUTH,
