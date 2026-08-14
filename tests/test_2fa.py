@@ -684,12 +684,35 @@ class TestValidate2fa2sa:
         assert len(sent) == 1
         assert "two-step authentication" in sent[0]
 
-    def test_falls_back_to_phone_number_label(self, monkeypatch, quiet_terminal):
+    def test_masks_the_phone_number_in_the_picker(self, monkeypatch, quiet_terminal):
+        """Only the last four digits are shown, and never to the log."""
         api = fake_api(requires_2sa=True)
-        api.trusted_devices = [{"phoneNumber": "+5491100000000"}]
+        api.trusted_devices = [{"phoneNumber": "+5491100001234"}]
         monkeypatch.setattr(merge.click, "prompt", lambda *a, **k: 0)
         monkeypatch.setattr(merge, "send_telegram_message", lambda *a, **k: None)
 
         merge._validate_2fa_2sa(api)
 
-        assert any("SMS to +5491100000000" in line for line in quiet_terminal)
+        picker = [line for line in quiet_terminal if "SMS to" in line]
+
+        assert len(picker) == 1
+        assert "****1234" in picker[0]
+        assert not any("+5491100001234" in line for line in quiet_terminal)
+
+    def test_does_not_log_device_details(self, monkeypatch, captured_logs, quiet_terminal):
+        """print_step mirrors to a persistent file, so devices must not go through it.
+
+        CodeQL flagged this as py/clear-text-logging-sensitive-data: the trusted
+        device list carries phone numbers and device names.
+        """
+        api = fake_api(requires_2sa=True)
+        api.trusted_devices = [{"deviceName": "Leandro's iPhone"}, {"phoneNumber": "+5491100001234"}]
+        monkeypatch.setattr(merge.click, "prompt", lambda *a, **k: 0)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda *a, **k: None)
+
+        merge._validate_2fa_2sa(api)
+
+        logged = " ".join(record.getMessage() for record in captured_logs)
+        assert "iPhone" not in logged
+        assert "1234" not in logged
+        assert "2 trusted device(s) found" in logged

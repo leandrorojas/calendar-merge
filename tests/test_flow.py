@@ -191,26 +191,30 @@ class TestLoadIcloudEvents:
         assert guid == "real-guid"
 
     def test_raises_when_no_guid_available(self, quiet_terminal):
-        service = FakeCalendarService(calendars=[{}, {"guid": None}])
+        service = icloud_service(FakeCalendarService(calendars=[{}, {"guid": None}]))
 
         with pytest.raises(RuntimeError, match="No calendar GUID available"):
-            merge._load_icloud_events(icloud_service(service), 5, [])
+            merge._load_icloud_events(service, 5, [])
 
     def test_raises_when_calendars_cannot_be_fetched(self, quiet_terminal):
         class Broken(FakeCalendarService):
             def get_calendars(self):
                 raise ConnectionError("offline")
 
+        service = icloud_service(Broken())
+
         with pytest.raises(RuntimeError, match="Unable to fetch calendars"):
-            merge._load_icloud_events(icloud_service(Broken()), 5, [])
+            merge._load_icloud_events(service, 5, [])
 
     def test_raises_when_events_cannot_be_loaded(self, quiet_terminal):
         class Broken(FakeCalendarService):
             def get_events(self, from_dt=None, to_dt=None):
                 raise ConnectionError("offline")
 
+        service = icloud_service(Broken())
+
         with pytest.raises(RuntimeError, match="Unable to load events from iCloud"):
-            merge._load_icloud_events(icloud_service(Broken()), 5, [])
+            merge._load_icloud_events(service, 5, [])
 
     def test_today_bod_is_midnight_and_tz_aware(self):
         service = FakeCalendarService()
@@ -597,8 +601,10 @@ class TestProcessSourceCalendar:
             process(monkeypatch, tmp_path, yaml_values=values)
 
     def test_raises_on_download_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        download_error = ConnectionError("timeout")
+
         with pytest.raises(RuntimeError, match="Unable to download calendar"):
-            process(monkeypatch, tmp_path, download_error=ConnectionError("timeout"))
+            process(monkeypatch, tmp_path, download_error=download_error)
 
     def test_raises_on_unparseable_ics(self, monkeypatch, tmp_path, quiet_terminal):
         with pytest.raises(RuntimeError, match="Unable to parse calendar"):
@@ -607,8 +613,10 @@ class TestProcessSourceCalendar:
     def test_propagates_yaml_error_for_missing_section(self, monkeypatch, tmp_path):
         # main() relies on YamlError to detect the end of the calendar list, so
         # it must not be swallowed here.
+        values = config_values()
+
         with pytest.raises(YamlError):
-            process(monkeypatch, tmp_path, yaml_values=config_values(), index=3)
+            process(monkeypatch, tmp_path, yaml_values=values, index=3)
 
 
 # --- main ---

@@ -114,8 +114,10 @@ class TestBuildDatetime:
         assert result.tzinfo == tz
 
     def test_short_sequence_raises(self):
+        tz = ZoneInfo("UTC")
+
         with pytest.raises(IndexError):
-            build_datetime([0, 2026, 3], ZoneInfo("UTC"))
+            build_datetime([0, 2026, 3], tz)
 
 
 # --- get_tag ---

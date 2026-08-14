@@ -287,15 +287,33 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
     return False
 
 
+def _describe_trusted_device(device: dict) -> str:
+    """Label a trusted device for the on-screen picker, with the number masked.
+
+    Only the last four digits are shown: enough to tell two phones apart, without
+    putting a full number on screen or in a screenshot.
+    """
+    name = device.get("deviceName")
+    if name:
+        return str(name)
+    number = str(device.get("phoneNumber") or "")
+    digits = "".join(character for character in number if character.isdigit())
+    return f"SMS to ****{digits[-4:]}" if digits else "SMS to an unlisted number"
+
+
 def _validate_2fa_2sa(api: PyiCloudService) -> bool:
     """Handle legacy two-step authentication flow. Returns True on success."""
-    print_step(TAG_2F_AUTH, "Two-step authentication required. Your trusted devices are:", one_liner=True)
-
     devices = api.trusted_devices
+
+    # Only the count is logged. print_step mirrors every message into
+    # logs/calendar-merge.log, and trusted-device entries carry phone numbers and
+    # device names -- CodeQL flags that as clear-text logging of sensitive data.
+    print_step(TAG_2F_AUTH, f"Two-step authentication required. {len(devices)} trusted device(s) found.")
+
+    # The picker itself is terminal-only, so the user can still tell devices apart
+    # without any of it reaching the log file.
     for i, device in enumerate(devices):
-        print_step(
-            TAG_2F_AUTH, f"  {i}: {device.get('deviceName', f'SMS to {device.get("phoneNumber")}')}", one_liner=True
-        )
+        term.print(f"{get_tag(TAG_2F_AUTH)}   {i}: {_describe_trusted_device(device)}", True)
 
     device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
     device = devices[device]
@@ -440,8 +458,13 @@ def send_telegram_message(message: str, disable_notification: bool = False) -> N
         loop.create_task(coro)
 
 
-async def _get_telegram_credentials() -> tuple[str, str] | None:
-    """Return (token, chat_id) or None if not configured."""
+def _get_telegram_credentials() -> tuple[str, str] | None:
+    """Return (token, chat_id) or None if not configured.
+
+    Not a coroutine: it only reads environment variables. Marking it `async`
+    implied it awaited something and forced its callers to await a value that was
+    always available synchronously.
+    """
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
@@ -476,7 +499,7 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
     if not message:
         return
 
-    creds = await _get_telegram_credentials()
+    creds = _get_telegram_credentials()
     if creds is None:
         return
     token, chat_id = creds
@@ -568,7 +591,7 @@ async def _wait_for_telegram_reply(
     after_send: Callable[[], None] | None = None,
     accept: Callable[[str], bool] | None = None,
 ) -> str | None:
-    creds = await _get_telegram_credentials()
+    creds = _get_telegram_credentials()
     if creds is None:
         return None
     token, chat_id = creds
