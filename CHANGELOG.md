@@ -6,8 +6,49 @@ tagged in git.
 
 ## [Unreleased]
 
+## [v0.1.8] — 2026-08-14
+
+### Added
+
+- Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
+  over Telegram but success was only reported to the terminal and the log file, so
+  an accepted code was indistinguishable from one that never arrived until a
+  failure message or the evening notification appeared. Sent only on the
+  trusted-device path, where the user is actually waiting on Telegram.
+- CodeQL security scanning (`.github/workflows/codeql.yml`), free and unlimited on
+  public repositories. Runs on pushes to `main`, on every pull request, and weekly
+  so newly published queries reach unchanged code. It complements the existing
+  reviewers by doing dataflow analysis rather than reading the diff, and found the
+  clear-text logging issue below within minutes of being enabled.
+
+### Changed
+
+- The 2FA code prompt is retried up to three times instead of aborting the merge
+  on the first rejected code. Apple's push is requested only on the first
+  attempt, since re-requesting invalidates the code the user is holding, and a
+  timeout still returns immediately rather than burning attempts.
+- `_get_telegram_credentials` is no longer a coroutine. It only reads environment
+  variables, so the `async` keyword implied an await that never happened.
+
 ### Fixed
 
+- A calendar listing two meetings in the same slot no longer syncs two events.
+  `_parse_source_events` now collapses source events sharing an exact
+  `(start, end)`, which is lossless because parsed events carry no title or raw
+  event and every synced event gets the same source tag. Duplicates created
+  before this change clean themselves up on the next run. Only exact matches
+  collapse: overlapping and contained slots stay separate, and deduplication is
+  per calendar. Measured on live feeds: 1630 → 1628 and 144 → 143 events.
+- Telegram replies are now validated as six-digit codes before being submitted to
+  Apple. Previously the first text message after the prompt was used, so `ok` — or
+  anyone else speaking in the chat — was sent as the code and failed the run.
+  Non-matching replies are ignored while polling continues.
+- An expired code no longer escapes the retry loop. pyicloud returns `False` for a
+  wrong code but can raise for an expired one, which was relabelled as the generic
+  `2FA validation error`; it is now treated as a rejection.
+- `prompt_telegram_reply` swallows transport errors like `send_telegram_message`
+  already did. A flood-control response during 2FA was reported as a 2FA failure
+  rather than a Telegram problem.
 - Session trust is now requested even when 2FA code validation fails. Apple can
   refuse a code while still granting trust, and the v0.1.5 refactor's early return
   stopped that request from happening — so a run like the 2026-07-30 incident no
@@ -22,51 +63,17 @@ tagged in git.
   became trusted. `requires_2fa` can be true on a trusted session, so that message
   promised a quiet next run on the basis of a flag that had not prevented this one
   from prompting.
+- Six `pytest.raises` blocks contained more than one call that could throw, so the
+  assertion did not prove which one raised. Setup calls are hoisted out.
 
-### Added
+### Security
 
-- CodeQL security scanning (`.github/workflows/codeql.yml`), free and unlimited on
-  public repositories. Runs on pushes to `main`, on every pull request, and weekly
-  so newly published queries reach unchanged code. Complements the existing
-  reviewers by doing dataflow analysis rather than reading the diff.
-
-### Added
-
-- Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
-  over Telegram but success was only reported to the terminal and the log file, so
-  an accepted code was indistinguishable from one that never arrived until a
-  failure message or the evening notification appeared. Sent only on the
-  trusted-device path, where the user is actually waiting on Telegram.
-
-### Changed
-
-- The 2FA code prompt is retried up to three times instead of aborting the merge
-  on the first rejected code. Apple's push is requested only on the first
-  attempt, since re-requesting invalidates the code the user is holding, and a
-  timeout still returns immediately rather than burning attempts.
-
-### Fixed
-
-- Telegram replies are now validated as six-digit codes before being submitted to
-  Apple. Previously the first text message after the prompt was used, so `ok` — or
-  anyone else speaking in the chat — was sent as the code and failed the run.
-  Non-matching replies are ignored while polling continues.
-- An expired code no longer escapes the retry loop. pyicloud returns `False` for a
-  wrong code but can raise for an expired one, which was relabelled as the generic
-  `2FA validation error`; it is now treated as a rejection.
-- `prompt_telegram_reply` swallows transport errors like `send_telegram_message`
-  already did. A flood-control response during 2FA was reported as a 2FA failure
-  rather than a Telegram problem.
-
-### Fixed
-
-- A calendar listing two meetings in the same slot no longer syncs two events.
-  `_parse_source_events` now collapses source events sharing an exact
-  `(start, end)`, which is lossless because parsed events carry no title or raw
-  event and every synced event gets the same source tag. Duplicates created
-  before this change clean themselves up on the next run. Only exact matches
-  collapse: overlapping and contained slots stay separate, and deduplication is
-  per calendar. Measured on live feeds: 1630 → 1628 and 144 → 143 events.
+- Trusted-device details are no longer written to the persistent log. CodeQL
+  flagged `py/clear-text-logging-sensitive-data` (high): the 2SA device picker
+  formatted phone numbers and device names into a message that `print_step`
+  mirrored into `logs/calendar-merge.log`. Only the device count is logged now, the
+  picker is written straight to the terminal, and the number is masked to its last
+  four digits.
 
 ## [v0.1.7] — 2026-08-13
 
