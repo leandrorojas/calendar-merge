@@ -3,6 +3,7 @@
 Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unified iCloud calendar with consistent titles and timezones.
 
 ## Highlights
+
 - Pulls events from any calendar that can expose an ICS feed.
 - Normalizes timezones and filters out weekends (or any days you choose).
 - Tags each imported event so you can trace the original source.
@@ -10,6 +11,7 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 - Optional Telegram alerts for start-of-day and end-of-day notifications.
 
 ## Requirements
+
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/) package manager (or another tool able to install from `pyproject.toml`)
 - iCloud account with calendar access and application-specific password or 2FA
@@ -175,9 +177,11 @@ Add the optional flags when you want Telegram updates:
 
 ```bash
 # Morning sync + Telegram start-of-day message
+
 uv run calendar-merge --first
 
 # Evening sync + Telegram end-of-day message
+
 uv run calendar-merge --last
 ```
 
@@ -190,6 +194,8 @@ A few details of that exchange:
 - **You get three attempts.** A rejected code is re-prompted rather than failing the whole run.
   Apple's code is only pushed once, on the first attempt — the retries reuse the same code, so
   don't wait for a new one.
+- **You get a confirmation.** When the code is accepted you receive a ✅ reply on Telegram, so a
+  working code is never mistaken for one that got lost.
 - **You have 5 minutes.** After that the run gives up, and it won't retry because nobody is
   answering. The next scheduled run will ask again.
 
@@ -205,6 +211,7 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - To validate your Telegram setup, send a test message to the bot and confirm the script can deliver notifications to the configured `TELEGRAM_CHAT_ID`.
 
 ## Notes
+
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
 - The script downloads temporary `.ics` files under the system temp directory while processing.
 - If you remove a calendar URL or `source-calendar-N` block, clean up the numbering so the indexes stay consecutive starting from `0`.

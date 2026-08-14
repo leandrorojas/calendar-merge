@@ -92,6 +92,12 @@ TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 TWO_FACTOR_CODE_ATTEMPTS = 3
 _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 
+# Sent only on the trusted-device path, where the user submitted the code over
+# Telegram and is waiting there. The FIDO2 and 2SA paths prompt on the terminal
+# instead, and validate_2fa ignores the FIDO2 result, so a confirmation there
+# could claim success for a key confirmation that actually failed.
+TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted"
+
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
 DEFAULT_LOG_LEVEL = "INFO"
@@ -249,6 +255,10 @@ def _validate_2fa_trusted_device(api: PyiCloudService) -> bool:
             return False
 
         if _validate_two_factor_code(api, code):
+            # The user is waiting on Telegram, where nothing else reports success:
+            # print_step only reaches the terminal and the log file. Without this,
+            # an accepted code looks identical to one that never arrived.
+            send_telegram_message(TELEGRAM_2FA_ACCEPTED_MESSAGE)
             return True
 
     print_step(TAG_2F_AUTH, f"Failed to verify security code after {TWO_FACTOR_CODE_ATTEMPTS} attempts", one_liner=True)

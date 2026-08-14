@@ -145,6 +145,13 @@ abort the whole merge until the next scheduled run. Three rules matter:
   for an expired one. `_validate_two_factor_code` catches it so the retry loop survives; letting it
   escape relabels a bad code as the generic `"2FA validation error"`.
 
+On success `_validate_2fa_trusted_device` sends `TELEGRAM_2FA_ACCEPTED_MESSAGE`. That send lives
+there rather than in `validate_2fa` after `_request_session_trust`, because `validate_2fa` **ignores
+the FIDO2 result** — confirming from that point would claim success for a key confirmation that
+failed. FIDO2 and 2SA also prompt on the terminal, so nobody is waiting on Telegram for them.
+Failure needs no equivalent: a rejection re-prompts, and an exhausted attempt limit reaches the
+`__main__` handler, which sends `Calendar merge failed: ...`.
+
 Replies are filtered by `_is_two_factor_code` (six digits) before being submitted. Without it,
 `_poll_telegram_updates` returned the first text message after the prompt, so `"ok"` — or anyone
 else speaking in the chat — was sent to Apple as the code. The predicate is injected through
