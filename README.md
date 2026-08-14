@@ -196,6 +196,9 @@ A few details of that exchange:
   don't wait for a new one.
 - **You get a confirmation.** When the code is accepted you receive a ✅ reply on Telegram, so a
   working code is never mistaken for one that got lost.
+- **A rejected code still banks the session trust.** If the code fails but Apple trusts the session
+  anyway, the run reports failure but tells you the next run shouldn't prompt — so you don't have to
+  guess whether anything was achieved.
 - **You have 5 minutes.** After that the run gives up, and it won't retry because nobody is
   answering. The next scheduled run will ask again.
 

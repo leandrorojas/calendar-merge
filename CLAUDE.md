@@ -145,6 +145,25 @@ abort the whole merge until the next scheduled run. Three rules matter:
   for an expired one. `_validate_two_factor_code` catches it so the retry loop survives; letting it
   escape relabels a bad code as the generic `"2FA validation error"`.
 
+**Session trust is requested even when the code is rejected.** Apple can refuse a code while still
+granting trust. On 2026-07-30 the trusted-device bridge failed to bootstrap, so no code could
+validate, yet `trust_session()` succeeded and the following run needed no 2FA at all. The v0.1.5
+refactor replaced the old `status` flag with an early return, which made the alert honest but threw
+that recovery away — every later run would have prompted again. `validate_2fa` now calls
+`_request_session_trust` regardless of the validation outcome and still returns the validation
+result, so the run fails (syncing on an unverified authentication would be worse) while the trust is
+kept. When validation failed but trust was granted, `TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE`
+explains that the next run should not prompt — otherwise the user only sees
+`Calendar merge failed`.
+
+`_request_session_trust` returns a bool for exactly this reason; it used to return `None` and only
+print.
+
+**A failed push disables the retries.** If `api.request_2fa_code()` raises, nothing exists for
+`validate_2fa_code()` to check against, so no code can ever succeed. `_validate_2fa_trusted_device`
+records that in `push_failure` and stops after the first attempt — without it the retry loop asks
+the user for three doomed codes.
+
 On success `_validate_2fa_trusted_device` sends `TELEGRAM_2FA_ACCEPTED_MESSAGE`. That send lives
 there rather than in `validate_2fa` after `_request_session_trust`, because `validate_2fa` **ignores
 the FIDO2 result** — confirming from that point would claim success for a key confirmation that

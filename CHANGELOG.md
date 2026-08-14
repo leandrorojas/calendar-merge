@@ -6,6 +6,19 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- Session trust is now requested even when 2FA code validation fails. Apple can
+  refuse a code while still granting trust, and the v0.1.5 refactor's early return
+  stopped that request from happening — so a run like the 2026-07-30 incident no
+  longer established the trust that had made the following run succeed without a
+  prompt. The run still reports failure, but a Telegram message explains that the
+  session is trusted and the next run should not prompt.
+- The 2FA prompt no longer retries when Apple's code request itself failed. A
+  trusted-device bridge that does not bootstrap leaves nothing to validate
+  against, so the retry introduced in v0.1.7 asked the user for three doomed
+  codes instead of one.
+
 ### Added
 
 - Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
