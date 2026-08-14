@@ -1,0 +1,47 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  # No branch filter: stacked PRs target intermediate branches, not just main,
+  # and still need scanning.
+  pull_request:
+  schedule:
+    # Weekly, so newly published queries reach code that has not changed.
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload results to the code scanning dashboard.
+      security-events: write
+      # Required by the action to read workflow run status on private forks.
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          languages: python
+          # security-extended adds lower-severity security queries on top of the
+          # default set; quality is left out to avoid overlapping Ruff and Sonar.
+          queries: security-extended
+
+      # No build step: Python is interpreted, so CodeQL analyses the source
+      # directly and autobuild would be a no-op.
+      - name: Analyse
+        uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          category: /language:python
