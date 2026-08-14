@@ -6,6 +6,23 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- Session trust is now requested even when 2FA code validation fails. Apple can
+  refuse a code while still granting trust, and the v0.1.5 refactor's early return
+  stopped that request from happening — so a run like the 2026-07-30 incident no
+  longer established the trust that had made the following run succeed without a
+  prompt. The run still reports failure, but a Telegram message explains that the
+  session is trusted and the next run should not prompt.
+- `_request_session_trust` now guards `api.trust_session()`. pyicloud catches only
+  two exception types there, while `_authenticate_with_token()` raises a third —
+  which, on the failure path this release added, would relabel an accurate
+  "2FA validation failed" as the generic "2FA validation error".
+- A session that was *already* trusted is no longer reported as one that just
+  became trusted. `requires_2fa` can be true on a trusted session, so that message
+  promised a quiet next run on the basis of a flag that had not prevented this one
+  from prompting.
+
 ### Added
 
 - Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
