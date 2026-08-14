@@ -156,13 +156,25 @@ kept. When validation failed but trust was granted, `TELEGRAM_2FA_TRUSTED_AFTER_
 explains that the next run should not prompt — otherwise the user only sees
 `Calendar merge failed`.
 
-`_request_session_trust` returns a bool for exactly this reason; it used to return `None` and only
-print.
+`_request_session_trust` returns a `SessionTrust` enum rather than a bool, because **"was already
+trusted" must not be reported as "trust has just been granted"**. `requires_2fa` is true whenever
+`hsaChallengeRequired` is set, even on a trusted session, so a run can prompt, fail, request nothing,
+and still find `is_trusted_session` true — promising a quiet next run there is a false reassurance,
+since that same flag did not stop *this* run from prompting. Only `SessionTrust.granted` sends the
+message.
 
-**A failed push disables the retries.** If `api.request_2fa_code()` raises, nothing exists for
-`validate_2fa_code()` to check against, so no code can ever succeed. `_validate_2fa_trusted_device`
-records that in `push_failure` and stops after the first attempt — without it the retry loop asks
-the user for three doomed codes.
+It also wraps `api.trust_session()`. pyicloud catches only `PyiCloudAPIResponseException` and
+`PyiCloud2FARequiredException`, while `_authenticate_with_token()` raises
+`PyiCloudFailedLoginException`, which is neither. Since this call now runs on the failure path too —
+where the session is least healthy — an escaping error would relabel an accurate
+`"2FA validation failed"` as the generic `"2FA validation error"` and suppress the trust message.
+
+**A raised `request_2fa_code()` must NOT disable the retries.** It is tempting to treat it as "no
+code was sent", and that is wrong twice over. pyicloud's bridge posts step0 — which makes Apple push
+the code — *before* the wait that times out, and when the bridge state is left unset
+`validate_2fa_code()` falls back to `_validate_trusted_device_code`, the legacy endpoint, which
+validates real codes. So the user usually does hold a working code. Short-circuiting there aborts on
+a single mistyped digit in exactly the bridge state this deployment hits most often.
 
 On success `_validate_2fa_trusted_device` sends `TELEGRAM_2FA_ACCEPTED_MESSAGE`. That send lives
 there rather than in `validate_2fa` after `_request_session_trust`, because `validate_2fa` **ignores

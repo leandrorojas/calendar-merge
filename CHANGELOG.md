@@ -14,10 +14,14 @@ tagged in git.
   longer established the trust that had made the following run succeed without a
   prompt. The run still reports failure, but a Telegram message explains that the
   session is trusted and the next run should not prompt.
-- The 2FA prompt no longer retries when Apple's code request itself failed. A
-  trusted-device bridge that does not bootstrap leaves nothing to validate
-  against, so the retry introduced in v0.1.7 asked the user for three doomed
-  codes instead of one.
+- `_request_session_trust` now guards `api.trust_session()`. pyicloud catches only
+  two exception types there, while `_authenticate_with_token()` raises a third —
+  which, on the failure path this release added, would relabel an accurate
+  "2FA validation failed" as the generic "2FA validation error".
+- A session that was *already* trusted is no longer reported as one that just
+  became trusted. `requires_2fa` can be true on a trusted session, so that message
+  promised a quiet next run on the basis of a flag that had not prevented this one
+  from prompting.
 
 ### Added
 

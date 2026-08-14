@@ -74,6 +74,25 @@ class TestValidate2faRouting:
         assert sent == [merge.TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE]
         assert any("next run should not prompt" in line for line in quiet_terminal)
 
+    def test_stays_quiet_when_the_session_was_already_trusted(self, monkeypatch, quiet_terminal):
+        """No request was made, so nothing changed and nothing may be promised.
+
+        requires_2fa is true whenever hsaChallengeRequired is set, even on a
+        trusted session, so this run prompted, failed, and requested nothing.
+        Telling the user the next run will be quiet would be a false reassurance —
+        the trust flag demonstrably did not stop *this* run from prompting.
+
+        Uses the real _request_session_trust so the already_trusted path is
+        exercised end to end.
+        """
+        sent = []
+        api = fake_api(requires_2fa=True, is_trusted_session=True)
+        monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+
+        assert merge.validate_2fa(api) is False
+        assert sent == []
+
     def test_stays_quiet_when_both_code_and_trust_fail(self, monkeypatch, quiet_terminal):
         sent = []
         monkeypatch.setattr(merge, "_validate_2fa_trusted_device", lambda api: False)
