@@ -366,7 +366,10 @@ class TestTwoFactorAcceptedNotification:
 
     def test_message_says_it_was_accepted(self):
         # Guards the wording: this is the only signal the user gets on Telegram.
-        assert "accepted" in merge.TELEGRAM_2FA_ACCEPTED_MESSAGE.lower()
+        # Asserted literally: this is the only success signal the user gets on
+        # Telegram, and comparing against the constant elsewhere would let an
+        # unintended rewording through unnoticed.
+        assert merge.TELEGRAM_2FA_ACCEPTED_MESSAGE == "✅ Apple 2FA code accepted"
 
     def test_stays_quiet_when_every_attempt_is_rejected(self, monkeypatch, quiet_terminal):
         sent = []
@@ -396,6 +399,22 @@ class TestTwoFactorAcceptedNotification:
 
         assert merge._validate_2fa_trusted_device(api) is True
         assert sent == [merge.TELEGRAM_2FA_ACCEPTED_MESSAGE]
+
+    def test_2sa_path_does_not_send_the_accepted_message(self, monkeypatch, quiet_terminal):
+        """2SA prompts on the terminal, so it must not claim Telegram acceptance.
+
+        It does send its own Telegram message announcing the challenge, so the
+        assertion is that the accepted message specifically is absent rather than
+        that nothing was sent at all.
+        """
+        sent = []
+        monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: sent.append(msg))
+        monkeypatch.setattr(merge.click, "prompt", lambda *a, **k: 0)
+        api = fake_api(requires_2fa=False, requires_2sa=True)
+
+        assert merge.validate_2fa(api) is True
+        assert merge.TELEGRAM_2FA_ACCEPTED_MESSAGE not in sent
+        assert any("two-step authentication" in message for message in sent)
 
     def test_fido2_path_does_not_notify(self, monkeypatch, quiet_terminal):
         """validate_2fa ignores the FIDO2 result, so success there is not proven.
