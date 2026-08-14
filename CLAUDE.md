@@ -22,6 +22,11 @@ uv run pytest tests/ -v                  # Unit tests
 uv run pytest --cov                      # Unit tests + coverage gate
 ```
 
+CodeQL (`.github/workflows/codeql.yml`) runs security queries on the same triggers plus a weekly
+schedule, so newly published queries reach code that has not changed. It needs no build step because
+Python is interpreted, and `security-events: write` is scoped to that job alone. `security-extended`
+is enabled; the `quality` suite is deliberately left off to avoid duplicating Ruff and SonarCloud.
+
 CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).

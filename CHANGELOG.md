@@ -8,6 +8,13 @@ tagged in git.
 
 ### Added
 
+- CodeQL security scanning (`.github/workflows/codeql.yml`), free and unlimited on
+  public repositories. Runs on pushes to `main`, on every pull request, and weekly
+  so newly published queries reach unchanged code. Complements the existing
+  reviewers by doing dataflow analysis rather than reading the diff.
+
+### Added
+
 - Telegram confirmation when an Apple 2FA code is accepted. The code is submitted
   over Telegram but success was only reported to the terminal and the log file, so
   an accepted code was indistinguishable from one that never arrived until a
