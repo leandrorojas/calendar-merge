@@ -694,7 +694,9 @@ class TestValidate2fa2sa:
         merge._validate_2fa_2sa(api)
 
         picker = [line for line in quiet_terminal if "SMS to" in line]
-        assert picker and "****1234" in picker[0]
+
+        assert len(picker) == 1
+        assert "****1234" in picker[0]
         assert not any("+5491100001234" in line for line in quiet_terminal)
 
     def test_does_not_log_device_details(self, monkeypatch, captured_logs, quiet_terminal):
