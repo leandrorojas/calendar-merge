@@ -440,8 +440,13 @@ def send_telegram_message(message: str, disable_notification: bool = False) -> N
         loop.create_task(coro)
 
 
-async def _get_telegram_credentials() -> tuple[str, str] | None:
-    """Return (token, chat_id) or None if not configured."""
+def _get_telegram_credentials() -> tuple[str, str] | None:
+    """Return (token, chat_id) or None if not configured.
+
+    Not a coroutine: it only reads environment variables. Marking it `async`
+    implied it awaited something and forced its callers to await a value that was
+    always available synchronously.
+    """
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
@@ -476,7 +481,7 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
     if not message:
         return
 
-    creds = await _get_telegram_credentials()
+    creds = _get_telegram_credentials()
     if creds is None:
         return
     token, chat_id = creds
@@ -568,7 +573,7 @@ async def _wait_for_telegram_reply(
     after_send: Callable[[], None] | None = None,
     accept: Callable[[str], bool] | None = None,
 ) -> str | None:
-    creds = await _get_telegram_credentials()
+    creds = _get_telegram_credentials()
     if creds is None:
         return None
     token, chat_id = creds

@@ -18,18 +18,18 @@ def run(coro):
 
 class TestGetTelegramCredentials:
     def test_returns_pair_when_configured(self, telegram_configured):
-        assert run(merge._get_telegram_credentials()) == ("test-token", "test-chat")
+        assert merge._get_telegram_credentials() == ("test-token", "test-chat")
 
     def test_returns_none_without_token(self, monkeypatch, quiet_terminal):
         monkeypatch.setenv(merge.ENV_TELEGRAM_CHAT_ID, "chat")
 
-        assert run(merge._get_telegram_credentials()) is None
+        assert merge._get_telegram_credentials() is None
         assert any("token not configured" in line for line in quiet_terminal)
 
     def test_returns_none_without_chat_id(self, monkeypatch, quiet_terminal):
         monkeypatch.setenv(merge.ENV_TELEGRAM_TOKEN, "token")
 
-        assert run(merge._get_telegram_credentials()) is None
+        assert merge._get_telegram_credentials() is None
         assert any("chat id not configured" in line for line in quiet_terminal)
 
 
