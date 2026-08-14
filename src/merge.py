@@ -96,7 +96,7 @@ _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 # Telegram and is waiting there. The FIDO2 and 2SA paths prompt on the terminal
 # instead, and validate_2fa ignores the FIDO2 result, so a confirmation there
 # could claim success for a key confirmation that actually failed.
-TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted, continuing the calendar merge."
+TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted"
 
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
