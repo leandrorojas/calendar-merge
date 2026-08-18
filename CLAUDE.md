@@ -215,6 +215,9 @@ not, and a flood-control response during 2FA surfaced as a 2FA failure rather th
 
 - Update `README.md` if the change affects usage, configuration, or setup instructions
 - Update `CLAUDE.md` if the change affects architecture, dependencies, or conventions
+- Update `BACKLOG.md` if the change closes a known gap, or if it uncovers one that is being
+  deliberately deferred. It records the evidence behind each deferral so the decision can be
+  re-examined instead of rediscovered.
 
 ## Conventions
 
