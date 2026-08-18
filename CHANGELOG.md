@@ -8,6 +8,14 @@ tagged in git.
 
 ### Fixed
 
+- `_configure_logging` no longer skips setup when an unrelated handler is attached
+  to the logger. Its guard was `if logger.handlers`, so any third party attaching a
+  handler silently left the application with no file logging at all. It now checks
+  for its own `RotatingFileHandler`. Surfaced by pytest 9.1, which attaches a
+  capture handler directly to loggers with `propagate = False`.
+
+### Fixed
+
 - `click` is now declared as a direct dependency. `merge.py` imports it for the
   interactive 2FA prompts but relied on it arriving transitively via pyicloud,
   which dropped it in 2.6.5 — so `import click` failed as soon as that upgrade was

@@ -6,6 +6,15 @@ from logging.handlers import RotatingFileHandler
 import merge
 
 
+def rotating_handlers():
+    """Our own handlers only.
+
+    pytest attaches a LogCaptureHandler directly to loggers with
+    propagate=False, so the list is not ours alone to index or count.
+    """
+    return [h for h in merge.logger.handlers if isinstance(h, RotatingFileHandler)]
+
+
 class TestStripAnsi:
     def test_removes_color_codes(self):
         colored = merge.term.TerminalColors.red.value + "error" + merge.term.TerminalColors.reset.value
@@ -32,9 +41,9 @@ class TestConfigureLogging:
 
         merge._configure_logging()
 
-        assert len(merge.logger.handlers) == 1
-        handler = merge.logger.handlers[0]
-        assert isinstance(handler, RotatingFileHandler)
+        handlers = rotating_handlers()
+        assert len(handlers) == 1
+        handler = handlers[0]
         assert handler.maxBytes == merge.LOG_MAX_BYTES
         assert handler.backupCount == merge.LOG_BACKUP_COUNT
 
@@ -53,7 +62,7 @@ class TestConfigureLogging:
         merge._configure_logging()
         merge._configure_logging()
 
-        assert len(merge.logger.handlers) == 1
+        assert len(rotating_handlers()) == 1
 
     def test_honours_log_level_env_var(self, tmp_path, monkeypatch):
         monkeypatch.setenv(merge.ENV_LOG_FILE, str(tmp_path / "merge.log"))
@@ -93,8 +102,7 @@ class TestConfigureLogging:
 
         merge._configure_logging()
 
-        handler = merge.logger.handlers[0]
-        assert isinstance(handler, RotatingFileHandler)
+        handler = rotating_handlers()[0]
         expected_root = merge.Path(merge.__file__).resolve().parent.parent
         assert merge.Path(handler.baseFilename) == expected_root / "logs" / "from-relative.log"
 
