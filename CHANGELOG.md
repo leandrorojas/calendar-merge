@@ -218,6 +218,16 @@ tagged in git.
 
 ## [v0.1.3] and earlier
 
-See git history for details. Tags v0.2.0 – v0.2.2 were marked as pre-release
-on GitHub because that work (override/cancel, dry-run, state management) was
-reverted in PR #42.
+See git history for details.
+
+A v0.2.0–v0.2.2 line was tagged in Feb–Mar 2026 (override/cancel, dry-run, state
+management) and then reverted in PR #42. Those tags and their GitHub releases were
+deleted in Aug 2026: they never described shipped behaviour, they sorted above the
+current version in any version-ordered listing, and the 0.2.x range is wanted for a
+future v2. The commits they pointed at remain reachable from `main`:
+
+| Tag | Commit | Merged |
+|---|---|---|
+| v0.2.0 | `958400c` | #21 override/cancel docs |
+| v0.2.1 | `f941b96` | #39 override-in-range |
+| v0.2.2 | `b74783d` | #41 telegram debug command |
