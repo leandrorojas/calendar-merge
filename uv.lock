@@ -44,6 +44,7 @@ name = "calendar-merge"
 version = "0.1.8"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "dotenv" },
     { name = "icalendar" },
     { name = "pyfangs" },
@@ -61,6 +62,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "icalendar", specifier = ">=6.3.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },

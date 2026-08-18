@@ -204,7 +204,7 @@ not, and a flood-control response during 2FA surfaced as a 2FA failure rather th
 - `pyfangs` (v0.7.3) — private library (`ssh://git@github.com/leandrorojas/pyfangs`): provides YamlHelper, FileSystem, terminal colors, Telegram (TelegramNotifier), and UTC conversion. The AI (GeminiAI) and DB (Postgres) modules are available as optional extras but not used here.
 - `pyicloud` (2.5.0) — iCloud API (calendar service, HSA2 2FA via trusted-device bridge)
 - `icalendar` — ICS file parsing
-- `click` — used for interactive 2FA prompts (note: not declared in pyproject.toml, comes via pyicloud)
+- `click` — used for interactive 2FA prompts. Declared directly in `pyproject.toml`: it used to arrive transitively via pyicloud, which dropped it in 2.6.5, so `import click` broke the moment that bump was attempted.
 
 ## Configuration
 

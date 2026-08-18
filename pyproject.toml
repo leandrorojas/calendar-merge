@@ -3,6 +3,10 @@ name = "calendar-merge"
 version = "0.1.8"
 requires-python = ">=3.12"
 dependencies = [
+    # Imported directly by merge.py for the interactive 2FA prompts. It used to
+    # arrive transitively via pyicloud, which dropped it in 2.6.5 -- so the import
+    # only worked by accident and must be declared here.
+    "click>=8.1",
     "dotenv>=0.9.9",
     "icalendar>=6.3.1",
     "pyfangs",
