@@ -130,6 +130,10 @@ class TestGetTag:
     def test_empty_string(self):
         assert get_tag("") == "[]"
 
+    def test_nested_brackets(self):
+        """The tag is wrapped verbatim, brackets and all."""
+        assert get_tag("[nested]") == "[[nested]]"
+
 
 # --- _normalize_skip_days ---
 
@@ -208,6 +212,19 @@ class TestCalculateFutureDate:
         result = _calculate_future_date(start, 1, [])
         assert result == datetime(2026, 3, 24)
 
+    def test_counts_across_weeks_when_only_one_weekday_is_allowed(self):
+        """Six of seven days skipped, so the window spans multiple weeks.
+
+        Starting Monday 2026-03-23 with Mon-Sat skipped, only Sundays count:
+        2026-03-29 is the first, 2026-04-05 the second.
+        """
+        start = datetime(2026, 3, 23)
+
+        result = _calculate_future_date(start, 2, ["0", "1", "2", "3", "4", "5"])
+
+        assert result == datetime(2026, 4, 5)
+        assert result.weekday() == 6
+
 
 # --- _end_of_day ---
 
@@ -228,6 +245,12 @@ class TestEndOfDay:
         dt = datetime(2026, 4, 15, 10, 30)
         result = _end_of_day(dt)
         assert result.tzinfo is None
+
+    def test_is_idempotent(self):
+        """A datetime already at end of day comes back unchanged."""
+        dt = datetime(2026, 3, 27, 23, 59, 59)
+
+        assert _end_of_day(dt) == dt
 
 
 # --- _reconcile_events ---
