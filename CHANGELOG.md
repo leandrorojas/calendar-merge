@@ -6,6 +6,13 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- `click` is now declared as a direct dependency. `merge.py` imports it for the
+  interactive 2FA prompts but relied on it arriving transitively via pyicloud,
+  which dropped it in 2.6.5 — so `import click` failed as soon as that upgrade was
+  attempted. The import had only ever worked by accident.
+
 ## [v0.1.8] — 2026-08-14
 
 ### Added
