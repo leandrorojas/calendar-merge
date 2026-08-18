@@ -25,6 +25,12 @@ tagged in git.
   interactive 2FA prompts but relied on it arriving transitively via pyicloud,
   which dropped it in 2.6.5 — so `import click` failed as soon as that upgrade was
   attempted. The import had only ever worked by accident.
+- The `calendar-merge` console script now works from an installed wheel. The
+  wheel shipped the module as `src/merge.py`, because hatch's `include` filters
+  paths without stripping them, and `src` is not a package -- so the entry point's
+  `from merge import main` raised `ModuleNotFoundError` on startup. Adding
+  `sources = ["src"]` puts `merge.py` at the wheel root. Present since at least
+  v0.1.8.
 - `_configure_logging` no longer skips setup when an unrelated handler is attached
   to the logger. Its guard was `if logger.handlers`, so any third party attaching a
   handler silently left the application with no file logging at all. It now checks
