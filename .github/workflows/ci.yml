@@ -36,15 +36,15 @@ jobs:
       # disagree on formatting. --no-build installs from wheels only, so no
       # sdist setup script is ever executed.
       - name: Install Ruff only (no private deps needed)
-        run: uv tool install --no-build "ruff==0.15.10"
+        run: uv tool install --no-build "ruff==0.16.3"
 
       # --from pins the version for the run itself; without it `uv tool run`
       # re-resolves ruff independently of the install step above.
       - name: Ruff lint
-        run: uv tool run --no-build --from "ruff==0.15.10" ruff check src/ tests/
+        run: uv tool run --no-build --from "ruff==0.16.3" ruff check src/ tests/
 
       - name: Ruff format check
-        run: uv tool run --no-build --from "ruff==0.15.10" ruff format --check src/ tests/
+        run: uv tool run --no-build --from "ruff==0.16.3" ruff format --check src/ tests/
 
   test-and-typecheck:
     name: Test & type check

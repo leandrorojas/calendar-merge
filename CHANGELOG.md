@@ -6,6 +6,19 @@ tagged in git.
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies updated after Dependabot was repaired: `icalendar` 6.3.1 → 7.2.2,
+  `pyicloud` 2.5.0 → 2.6.5, `click` 8.3.0 → 8.4.2, `mypy` 1.20.1 → 2.3.1,
+  `pytest` 9.0.3 → 9.1.1, `pre-commit` 4.5.1 → 4.6.2, `ruff` 0.15.10 → 0.16.3,
+  plus five GitHub Actions. Verified beyond the test suite, which fakes pyicloud:
+  icalendar 7 produces byte-identical results on all three live feeds, and every
+  pyicloud API and documented behaviour `merge.py` depends on is unchanged.
+- The `ruff` pin in `ci.yml` and `.pre-commit-config.yaml` bumped to match. Those
+  are string literals Dependabot cannot see, so its `uv` update left CI linting
+  with 0.15.10 while the project used 0.16.3 — the exact drift that pin exists to
+  prevent.
+
 ### Fixed
 
 - `_configure_logging` no longer skips setup when an unrelated handler is attached
