@@ -1,8 +1,26 @@
 version: 2
+
+# pyfangs is a private repository, and Dependabot's container has no SSH key, so
+# resolving the lockfile failed with "dependency_file_not_resolvable" and the uv
+# job aborted before updating anything. This supplies HTTPS credentials for
+# github.com so the proxy can fetch it.
+#
+# Needs a DEPENDABOT_PAT secret with read access to leandrorojas/pyfangs, set under
+# Settings > Secrets and variables > Dependabot (Actions secrets are NOT visible to
+# Dependabot).
+registries:
+  pyfangs:
+    type: git
+    url: https://github.com
+    username: x-access-token
+    password: ${{secrets.DEPENDABOT_PAT}}
+
 updates:
   # Python dependencies (pyproject.toml + uv.lock)
   - package-ecosystem: "uv"
     directory: "/"
+    registries:
+      - pyfangs
     schedule:
       interval: "weekly"
       day: "monday"
@@ -12,7 +30,12 @@ updates:
         patterns:
           - "*"
 
-  # GitHub Actions
+  # GitHub Actions. Runs as an independent job, so it is unaffected by the uv
+  # ecosystem above. Its earlier failures were only because no workflow files
+  # existed before 2026-08-11; ci.yml and codeql.yml now do.
+  #
+  # This one matters: every action is pinned to a commit SHA for security, and
+  # those pins only stay current if Dependabot bumps them.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
