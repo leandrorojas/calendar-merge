@@ -130,7 +130,7 @@ def _configure_logging() -> None:
 
     Called once at startup. Safe to call multiple times (idempotent).
     """
-    if logger.handlers:
+    if any(isinstance(handler, RotatingFileHandler) for handler in logger.handlers):
         return  # already configured
 
     level_name = os.getenv(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL).upper()
