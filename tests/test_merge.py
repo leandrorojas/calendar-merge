@@ -1,6 +1,6 @@
 """Unit tests for pure logic functions in merge.py."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -130,6 +130,10 @@ class TestGetTag:
     def test_empty_string(self):
         assert get_tag("") == "[]"
 
+    def test_nested_brackets(self):
+        """The tag is wrapped verbatim, brackets and all."""
+        assert get_tag("[nested]") == "[[nested]]"
+
 
 # --- _normalize_skip_days ---
 
@@ -208,6 +212,33 @@ class TestCalculateFutureDate:
         result = _calculate_future_date(start, 1, [])
         assert result == datetime(2026, 3, 24)
 
+    def test_preserves_an_aware_start_date(self):
+        """Production calls this with both naive and aware datetimes.
+
+        `_load_icloud_events` passes `datetime.today()` (naive) for the iCloud
+        fetch range and `datetime.now().astimezone()` (aware) for the cut-off, but
+        every other case here is naive, so the aware path was unpinned.
+        """
+        start = datetime(2026, 3, 23, tzinfo=UTC)
+
+        result = _calculate_future_date(start, 5, [])
+
+        assert result == datetime(2026, 3, 28, tzinfo=UTC)
+        assert result.tzinfo is UTC
+
+    def test_counts_across_weeks_when_only_one_weekday_is_allowed(self):
+        """Six of seven days skipped, so the window spans multiple weeks.
+
+        Starting Monday 2026-03-23 with Mon-Sat skipped, only Sundays count:
+        2026-03-29 is the first, 2026-04-05 the second.
+        """
+        start = datetime(2026, 3, 23)
+
+        result = _calculate_future_date(start, 2, ["0", "1", "2", "3", "4", "5"])
+
+        assert result == datetime(2026, 4, 5)
+        assert result.weekday() == 6
+
 
 # --- _end_of_day ---
 
@@ -228,6 +259,14 @@ class TestEndOfDay:
         dt = datetime(2026, 4, 15, 10, 30)
         result = _end_of_day(dt)
         assert result.tzinfo is None
+
+    def test_is_idempotent(self):
+        """Applying it twice gives the same result as applying it once."""
+        dt = datetime(2026, 3, 27, 10, 30)
+
+        once = _end_of_day(dt)
+
+        assert _end_of_day(once) == once
 
 
 # --- _reconcile_events ---
