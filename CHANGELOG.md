@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Added
+
+- `BACKLOG.md`, recording known gaps that are deliberately unfixed — recurring-event
+  expansion, the host-timezone coupling of the date window, the ruff pin that drifts on
+  every bump, CI's blindness to the packaging layout, and the 2FA flow never having been
+  exercised against a live Apple challenge. Each entry carries its evidence and what a fix
+  would take, so a deferral can be re-examined rather than rediscovered.
+
 ## [v0.1.9] — 2026-08-18
 
 ### Changed

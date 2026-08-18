@@ -218,5 +218,8 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
 - The script downloads temporary `.ics` files under the system temp directory while processing.
 - If you remove a calendar URL or `source-calendar-N` block, clean up the numbering so the indexes stay consecutive starting from `0`.
+- **Recurring events are not expanded.** Only the original occurrence of a repeating meeting is
+  considered, so a long-running weekly series may contribute nothing to the window. See
+  [BACKLOG.md](BACKLOG.md) for this and other known gaps.
 
 Happy merging!
