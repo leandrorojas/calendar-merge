@@ -1,6 +1,6 @@
 """Unit tests for pure logic functions in merge.py."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -212,6 +212,20 @@ class TestCalculateFutureDate:
         result = _calculate_future_date(start, 1, [])
         assert result == datetime(2026, 3, 24)
 
+    def test_preserves_an_aware_start_date(self):
+        """Production calls this with both naive and aware datetimes.
+
+        `_load_icloud_events` passes `datetime.today()` (naive) for the iCloud
+        fetch range and `datetime.now().astimezone()` (aware) for the cut-off, but
+        every other case here is naive, so the aware path was unpinned.
+        """
+        start = datetime(2026, 3, 23, tzinfo=UTC)
+
+        result = _calculate_future_date(start, 5, [])
+
+        assert result == datetime(2026, 3, 28, tzinfo=UTC)
+        assert result.tzinfo is UTC
+
     def test_counts_across_weeks_when_only_one_weekday_is_allowed(self):
         """Six of seven days skipped, so the window spans multiple weeks.
 
@@ -247,10 +261,12 @@ class TestEndOfDay:
         assert result.tzinfo is None
 
     def test_is_idempotent(self):
-        """A datetime already at end of day comes back unchanged."""
-        dt = datetime(2026, 3, 27, 23, 59, 59)
+        """Applying it twice gives the same result as applying it once."""
+        dt = datetime(2026, 3, 27, 10, 30)
 
-        assert _end_of_day(dt) == dt
+        once = _end_of_day(dt)
+
+        assert _end_of_day(once) == once
 
 
 # --- _reconcile_events ---
