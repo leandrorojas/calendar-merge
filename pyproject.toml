@@ -84,8 +84,12 @@ module = "tests.*"
 # Tests often don't need strict typing.
 disallow_untyped_defs = false
 
-# 🔑 Tell Hatch to include your single module
+# 🔑 Tell Hatch to include your single module.
+# sources strips the leading src/ so the wheel gets merge.py at its root.
+# Without it the module installs as src/merge.py -- src is not a package, so
+# the calendar-merge entry point cannot import merge and dies on startup.
 [tool.hatch.build.targets.wheel]
+sources = ["src"]
 include = ["src/merge.py"]
 
 [tool.uv.sources]
