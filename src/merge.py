@@ -111,6 +111,10 @@ DEFAULT_LOG_LEVEL = "INFO"
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
 
+# Causes to unwrap into an alert. Deep enough for wrapper -> library -> transport,
+# short enough that the message stays readable on a phone.
+ERROR_CAUSE_DEPTH = 3
+
 # Regex to strip ANSI color codes (e.g., TAG_* constants include terminal colors)
 # so file logs stay clean.
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -153,6 +157,41 @@ def _configure_logging() -> None:
 def _strip_ansi(text: str) -> str:
     """Remove ANSI color codes so file logs stay clean."""
     return _ANSI_ESCAPE.sub("", text)
+
+
+def _describe_error(err: BaseException) -> str:
+    """Render an exception together with the causes it was raised from.
+
+    Every failure in this program reaches Telegram through the `__main__` handler,
+    which used to send only `str(err)`. The raise sites deliberately wrap low-level
+    failures in a readable RuntimeError -- `raise RuntimeError("Unable to load
+    events from iCloud") from err` -- so the message that arrived described *where*
+    the merge stopped and never *why*. On 2026-08-18 that cost an investigation: an
+    Apple outage returning bodiless HTTP 500s was indistinguishable, from the alert
+    alone, from a broken session.
+
+    Only `__cause__` is followed, never `__context__`. `from err` is explicit and
+    always meaningful; implicit context is whatever happened to be in flight and
+    would add noise to an alert that has to stay readable on a phone.
+
+    Note the cause's own text can be actively misleading and this is not the place
+    to correct it -- pyicloud rewrites the reason for any 409/421/450/500 to
+    "Authentication required for Account." (see CLAUDE.md). Surfacing the type and
+    code is what makes that recognisable.
+    """
+    parts: list[str] = []
+    seen: set[int] = {id(err)}
+    cause: BaseException | None = err.__cause__
+
+    while cause is not None and len(parts) < ERROR_CAUSE_DEPTH and id(cause) not in seen:
+        seen.add(id(cause))
+        parts.append(f"{type(cause).__name__}: {cause}".strip())
+        cause = cause.__cause__
+
+    message = str(err) or type(err).__name__
+    if not parts:
+        return message
+    return f"{message} ({' <- '.join(parts)})"
 
 
 class SessionTrust(Enum):
@@ -1142,9 +1181,10 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as err:
-        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {err}")
+        described = _describe_error(err)
+        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
         logger.exception("Merge process failed")
-        send_telegram_message(f"Calendar merge failed: {err}")
+        send_telegram_message(f"Calendar merge failed: {described}")
 
     merge_end = perf_counter()
     total = merge_end - merge_start

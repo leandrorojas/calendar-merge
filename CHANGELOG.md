@@ -6,6 +6,18 @@ tagged in git.
 
 ## [Unreleased]
 
+### Changed
+
+- Failure alerts now carry the chained cause. The `__main__` handler sent `str(err)`, and
+  because raise sites wrap low-level failures in a readable RuntimeError, every alert said
+  where the merge stopped and never why. It now sends `_describe_error(err)`, which appends
+  the causes up to `ERROR_CAUSE_DEPTH`.
+
+  Prompted by an Apple outage on 2026-08-18: the calendar events endpoint returned bodiless
+  HTTP 500s for ~45 minutes, and since pyicloud rewrites the reason for any 409/421/450/500
+  to `"Authentication required for Account."`, the alert read as a broken session. The real
+  cause was only recoverable by reading the log file on the host.
+
 ### Added
 
 - `BACKLOG.md`, recording known gaps that are deliberately unfixed — recurring-event
