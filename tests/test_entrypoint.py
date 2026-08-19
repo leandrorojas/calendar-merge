@@ -52,6 +52,15 @@ class TestEntrypoint:
 
         assert any("Unable to open YAML configuration" in line for line in quiet_terminal)
 
+    def test_surfaces_the_chained_cause(self, quiet_terminal):
+        """The wrapper alone says where it stopped, never why."""
+        run_entrypoint()
+
+        reported = [line for line in quiet_terminal if "An error occurred" in line]
+        assert reported, "expected a failure line"
+        assert any("simulated missing config" in line for line in reported)
+        assert any("OSError" in line for line in reported)
+
     def test_logs_the_traceback(self, captured_logs):
         run_entrypoint()
 

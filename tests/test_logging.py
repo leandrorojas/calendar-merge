@@ -34,6 +34,80 @@ class TestStripAnsi:
         assert merge._strip_ansi("") == ""
 
 
+class TestDescribeError:
+    """`_describe_error` is what makes a Telegram alert diagnosable."""
+
+    def test_returns_the_message_when_there_is_no_cause(self):
+        assert merge._describe_error(ValueError("plain failure")) == "plain failure"
+
+    def test_falls_back_to_the_type_when_the_message_is_empty(self):
+        assert merge._describe_error(RuntimeError()) == "RuntimeError"
+
+    def test_appends_the_cause_type_and_message(self):
+        try:
+            try:
+                raise KeyError("dsInfo")
+            except KeyError as inner:
+                raise RuntimeError("Unable to load events from iCloud") from inner
+        except RuntimeError as err:
+            described = merge._describe_error(err)
+
+        assert described == "Unable to load events from iCloud (KeyError: 'dsInfo')"
+
+    def test_reproduces_the_2026_08_18_outage_alert(self):
+        """The alert that was unreadable: an Apple 500 behind a wrapper."""
+
+        class PyiCloudAPIResponseException(Exception):
+            pass
+
+        cause = PyiCloudAPIResponseException("Authentication required for Account. (500)")
+        err = RuntimeError("Unable to load events from iCloud")
+        err.__cause__ = cause
+
+        described = merge._describe_error(err)
+
+        assert "PyiCloudAPIResponseException" in described
+        assert "(500)" in described
+        assert described.startswith("Unable to load events from iCloud (")
+
+    def test_follows_a_chain_of_causes(self):
+        first = ValueError("one")
+        second = TypeError("two")
+        second.__cause__ = first
+        top = RuntimeError("top")
+        top.__cause__ = second
+
+        assert merge._describe_error(top) == "top (TypeError: two <- ValueError: one)"
+
+    def test_stops_at_the_depth_limit(self):
+        chain = [OSError("four"), KeyError("three"), TypeError("two"), ValueError("one")]
+        for outer, inner in zip(chain, chain[1:]):
+            outer.__cause__ = inner
+        top = RuntimeError("top")
+        top.__cause__ = chain[0]
+
+        described = merge._describe_error(top)
+
+        assert described.count("<-") == merge.ERROR_CAUSE_DEPTH - 1
+        assert "one" not in described
+
+    def test_survives_a_cycle_of_causes(self):
+        # A self-referential chain must terminate rather than hang the alert.
+        first = ValueError("a")
+        second = TypeError("b")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        assert merge._describe_error(first) == "a (TypeError: b)"
+
+    def test_ignores_implicit_context(self):
+        # Only `raise ... from err` is meaningful; __context__ is noise.
+        err = RuntimeError("wrapper")
+        err.__context__ = ValueError("incidental")
+
+        assert merge._describe_error(err) == "wrapper"
+
+
 class TestConfigureLogging:
     def test_creates_rotating_handler_at_configured_path(self, tmp_path, monkeypatch):
         log_file = tmp_path / "nested" / "merge.log"
