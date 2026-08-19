@@ -1,6 +1,7 @@
 """Tests for logging setup, ANSI stripping, and print_step mirroring."""
 
 import logging
+from itertools import pairwise
 from logging.handlers import RotatingFileHandler
 
 import merge
@@ -81,7 +82,7 @@ class TestDescribeError:
 
     def test_stops_at_the_depth_limit(self):
         chain = [OSError("four"), KeyError("three"), TypeError("two"), ValueError("one")]
-        for outer, inner in zip(chain, chain[1:]):
+        for outer, inner in pairwise(chain):
             outer.__cause__ = inner
         top = RuntimeError("top")
         top.__cause__ = chain[0]
