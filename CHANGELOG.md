@@ -4,7 +4,7 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
-## [Unreleased]
+## [v0.1.10] — 2026-08-19
 
 ### Fixed
 
