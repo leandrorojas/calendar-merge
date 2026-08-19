@@ -116,6 +116,28 @@ Two Outlook events (`SALIDA NIÑES`, `TERAPIA`) are personal blocks marked `BUSY
 from meetings, and are knowingly synced. Excluding them would need title matching, which was
 considered and rejected.
 
+**Failure alerts carry the chained cause.** The `__main__` handler sends
+`_describe_error(err)`, not `str(err)`. Raise sites wrap low-level failures in a readable
+RuntimeError -- `raise RuntimeError("Unable to load events from iCloud") from err` -- so the
+bare message says where the merge stopped and never why. `_describe_error` walks `__cause__`
+up to `ERROR_CAUSE_DEPTH` and renders `wrapper (Type: message <- Type: message)`.
+
+Only `__cause__` is followed. `from err` is explicit and always meaningful; `__context__` is
+whatever happened to be in flight and would fill a phone-sized alert with noise.
+
+**pyicloud rewrites the reason for 409/421/450/500.** `session.py::_raise_error` replaces the
+real reason with the literal string `"Authentication required for Account."` for any of those
+codes, and `AppleAuthError.GENERAL_AUTH_ERROR` is **500** -- so a plain server error is reported
+as an authentication problem. Apple's actual reason is discarded and cannot be recovered.
+
+On 2026-08-18 the calendar *events* endpoint returned bodiless 500s for ~45 minutes (runs at
+16:45, 17:00 and 17:15 failed; 17:30 was clean). `get_calendars()` succeeded seconds earlier in
+the same run because it uses a different endpoint, which made the failure look specific to our
+code. Two tells separate this from a real auth failure: the exception message has no
+`: {body}` suffix, since `PyiCloudAPIResponseException` appends `response.text` whenever there
+is one, and no 2FA prompt is issued. Do not chase a session bug on this signature without
+checking both.
+
 **Source feed quirks:** Outlook/Microsoft 365 feeds are plain ICS and need no dedicated code
 path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps
 to IANA zones, so the parsed datetimes arrive timezone-aware.

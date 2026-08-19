@@ -58,6 +58,20 @@ on a public repository.
 **Action:** repository Settings → Code security → enable *Dependabot alerts*. One
 toggle, requires repo admin. Cannot be done from the API with the current token.
 
+### A transient upstream outage sends one alert per run
+
+Runs are scheduled every 15 minutes and hold no state between them, so an upstream outage
+lasting longer than one interval sends one failure alert per run. The Apple 500s on
+2026-08-18 produced three alerts for a single self-healing incident.
+
+Suppressing until N consecutive failures needs state that survives across runs -- a marker
+file or a counter -- which is the first persistent state this program would own. An in-run
+retry is *not* the fix: that outage ran ~45 minutes against a 15-minute schedule, so a retry
+measured in seconds would have failed anyway.
+
+**Deferred** until it recurs. One incident is not enough to justify persistent state, and the
+alerts were at least accurate -- the sync really did not happen.
+
 ### The ruff pin drifts on every ruff bump
 
 The ruff version is declared in three places:
