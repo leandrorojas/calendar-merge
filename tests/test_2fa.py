@@ -716,3 +716,106 @@ class TestValidate2fa2sa:
         assert "iPhone" not in logged
         assert "1234" not in logged
         assert "2 trusted device(s) found" in logged
+
+
+class TestDisableAutomaticTwoFactorRequests:
+    """pyicloud 2.6.5 asks Apple for a code on its own; this module must not let it.
+
+    The push and SMS it issues run from inside `PyiCloudService.__init__`, before
+    any instance exists to configure, and each fresh request invalidates the code
+    the user is holding.
+    """
+
+    def test_pyicloud_still_defines_the_method_we_suppress(self):
+        """Canary: a rename upstream would silently restore the SMS.
+
+        This asserts against the real library, not a fake. If pyicloud drops or
+        renames `_request_2fa_code`, the patch quietly stops applying and the
+        duplicate code requests come back with no other signal.
+        """
+        import pyicloud
+
+        assert hasattr(pyicloud.PyiCloudService, merge.PYICLOUD_AUTO_2FA_METHOD), (
+            f"pyicloud no longer defines {merge.PYICLOUD_AUTO_2FA_METHOD!r}; "
+            "_disable_automatic_2fa_requests is now a no-op and needs revisiting"
+        )
+
+    def test_replaces_the_method_on_the_real_class(self, monkeypatch):
+        import pyicloud
+
+        def original(self):
+            return "apple was asked for a code"
+
+        monkeypatch.setattr(pyicloud.PyiCloudService, merge.PYICLOUD_AUTO_2FA_METHOD, original)
+
+        merge._disable_automatic_2fa_requests()
+
+        replacement = getattr(pyicloud.PyiCloudService, merge.PYICLOUD_AUTO_2FA_METHOD)
+        assert replacement is not original
+
+    def test_the_replacement_does_nothing(self, monkeypatch):
+        calls: list[str] = []
+
+        class Service:
+            def _request_2fa_code(self):
+                calls.append("asked apple")
+
+        monkeypatch.setattr(merge, "PyiCloudService", Service)
+
+        merge._disable_automatic_2fa_requests()
+        Service()._request_2fa_code()
+
+        assert calls == []
+
+    def test_leaves_a_class_without_the_method_untouched(self, monkeypatch):
+        """An older pyicloud must not gain a stub it never had."""
+
+        class Service:
+            pass
+
+        monkeypatch.setattr(merge, "PyiCloudService", Service)
+
+        merge._disable_automatic_2fa_requests()
+
+        assert not hasattr(Service, merge.PYICLOUD_AUTO_2FA_METHOD)
+
+    def test_suppression_happens_before_the_service_is_built(self, monkeypatch):
+        """The ordering is the whole point: pyicloud asks during __init__."""
+        events: list[str] = []
+
+        class Service:
+            def _request_2fa_code(self):
+                events.append("apple asked for a code")
+
+            def __init__(self, user, password):
+                # Mirror pyicloud: authenticate() runs inside the constructor.
+                type(self)._request_2fa_code(self)
+                events.append("service constructed")
+
+        monkeypatch.setattr(merge, "PyiCloudService", Service)
+        monkeypatch.setattr(merge, "validate_2fa", lambda service: True)
+
+        merge._authenticate_icloud()
+
+        assert events == ["service constructed"]
+
+    def test_the_explicit_push_still_happens(self, monkeypatch):
+        """Suppressing pyicloud's request must not suppress our own.
+
+        `after_send` is what actually invokes it, so this also pins that the push
+        stays wired to the first prompt.
+        """
+        pushes: list[str] = []
+        api = fake_api(requires_2fa=True)
+        api.request_2fa_code = lambda: pushes.append("push")
+
+        def reply(prompt, after_send=None, accept=None):
+            if after_send is not None:
+                after_send()
+            return "123456"
+
+        monkeypatch.setattr(merge, "prompt_telegram_reply", reply)
+
+        merge._validate_2fa_trusted_device(api)
+
+        assert pushes == ["push"]

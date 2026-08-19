@@ -121,6 +121,11 @@ mistaken reading proves nothing. That reading has been wrong before.
 **Deliberately deferred:** verifying it means triggering a real 2FA challenge, which
 cannot be done on demand without disturbing a working session.
 
+Raised in importance by pyicloud 2.6.5: the bridge now accepts Apple's `flowid`, so it may
+succeed where it previously failed straight through to the legacy validation endpoint. The
+documented reasoning about a raised `request_2fa_code()` was written against that fallback
+path. The next real 2FA challenge is worth watching rather than merely surviving.
+
 ---
 
 ## Code health

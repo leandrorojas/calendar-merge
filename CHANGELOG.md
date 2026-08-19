@@ -6,6 +6,16 @@ tagged in git.
 
 ## [Unreleased]
 
+### Fixed
+
+- pyicloud is no longer allowed to request 2FA codes on its own. 2.6.5 added
+  `_request_2fa_code`, called from inside `authenticate()` — which `PyiCloudService` runs
+  in its constructor — pushing to the trusted device and then sending an SMS, honouring
+  neither `_can_request_sms_2fa_code` nor anything else settable on an instance that does
+  not exist yet. One re-authentication delivered a push, an SMS and then our own push, and
+  because each fresh request invalidates the previous code, the code the user reads may
+  already be dead. `_disable_automatic_2fa_requests()` patches the class before construction.
+
 ### Changed
 
 - Failure alerts now carry the chained cause. The `__main__` handler sent `str(err)`, and

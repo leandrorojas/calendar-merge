@@ -90,6 +90,10 @@ TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 # attempt. A mistyped code gets more than one try because a human is in the loop
 # and the alternative is aborting the whole merge until the next scheduled run.
 TWO_FACTOR_CODE_ATTEMPTS = 3
+
+# pyicloud >= 2.6.5 asks Apple for a code on its own from inside authenticate().
+# Named here so the canary test fails loudly if a future release renames it.
+PYICLOUD_AUTO_2FA_METHOD = "_request_2fa_code"
 _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 
 # Sent only on the trusted-device path, where the user submitted the code over
@@ -968,9 +972,37 @@ def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem]:
     return yaml_helper, future_event_days, skip_days, fs
 
 
+def _disable_automatic_2fa_requests() -> None:
+    """Stop pyicloud from asking Apple for a 2FA code on its own.
+
+    pyicloud 2.6.5 added `_request_2fa_code`, called from inside `authenticate()`
+    -- which `PyiCloudService` runs in its own constructor. It pushes to the
+    trusted device and then, if the Apple ID has a trusted phone number, sends an
+    SMS as well. It consults neither `_can_request_sms_2fa_code` nor anything else
+    this module can set: the instance does not exist yet when it runs, so
+    `_validate_2fa_trusted_device`'s guard is assigned far too late to matter.
+
+    That works directly against the retry loop, which issues the push on the first
+    attempt only because every fresh request invalidates the code the user is
+    holding. Left alone, one re-authentication delivers a push, an SMS and then
+    another push, and the code the user reads off their phone may already be dead.
+
+    Suppressed so this module remains the only thing that asks Apple for a code.
+    The explicit `api.request_2fa_code()` in `_validate_2fa_trusted_device` still
+    runs, still pushes, and still honours the SMS guard.
+
+    Patched on the class rather than the instance because the call happens during
+    construction. Guarded by `hasattr` so an older pyicloud, or a release that
+    drops the method, is left untouched instead of gaining a stub.
+    """
+    if hasattr(PyiCloudService, PYICLOUD_AUTO_2FA_METHOD):
+        setattr(PyiCloudService, PYICLOUD_AUTO_2FA_METHOD, lambda self: None)
+
+
 def _authenticate_icloud() -> PyiCloudService:
     """Connect to iCloud and handle 2FA. Returns the authenticated service."""
     print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", one_liner=False)
+    _disable_automatic_2fa_requests()
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
     except Exception as err:

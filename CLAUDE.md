@@ -219,12 +219,43 @@ stays generic; passing no predicate accepts any text.
 `prompt_telegram_reply` swallows transport errors the same way `send_telegram_message` does. It did
 not, and a flood-control response during 2FA surfaced as a 2FA failure rather than a Telegram one.
 
-**2FA flow (pyicloud 2.5.0):** `api.request_2fa_code()` triggers the trusted-device push. The SMS fallback is explicitly disabled via `api._can_request_sms_2fa_code = lambda: False` because pyicloud's trusted-device bridge can time out waiting for the WebSocket return payload (while still successfully pushing the code to the device), which would otherwise switch the delivery method to `"sms"` and reject the trusted-device code at validation.
+**2FA flow (pyicloud 2.6.5):** `api.request_2fa_code()` triggers the trusted-device push. The SMS fallback is explicitly disabled via `api._can_request_sms_2fa_code = lambda: False` because pyicloud's trusted-device bridge can time out waiting for the WebSocket return payload (while still successfully pushing the code to the device), which would otherwise switch the delivery method to `"sms"` and reject the trusted-device code at validation.
+
+**pyicloud asks Apple for codes on its own, and must be stopped.** 2.6.5 added
+`_request_2fa_code`, called from inside `authenticate()` — which `PyiCloudService` runs in its
+**constructor**. It pushes to the trusted device and then, if the Apple ID has a trusted phone
+number, PUTs `/verify/phone` with `"mode": "sms"`. It consults `_can_request_sms_2fa_code` for
+neither.
+
+The existing guard cannot reach it. `api._can_request_sms_2fa_code = lambda: False` is assigned
+to the *instance* in `_validate_2fa_trusted_device`, long after the constructor has already
+asked Apple for codes. So `_authenticate_icloud` calls `_disable_automatic_2fa_requests()`
+first, patching the **class** before any instance exists.
+
+Without it one re-authentication delivers a push, an SMS, and then our own push. Since every
+fresh request invalidates the previous code, the code the user reads off their phone may
+already be dead — which defeats the retry loop, whose entire reason for pushing on the first
+attempt only is to avoid exactly that.
+
+It does *not* call `_set_two_factor_delivery_state`, so it does not flip the delivery method to
+`"sms"`; that separate hazard, which the instance guard exists for, still does not occur. Both
+guards are needed and neither replaces the other.
+
+`PYICLOUD_AUTO_2FA_METHOD` names the upstream method, and a canary test asserts it still exists
+on the real `PyiCloudService`. A rename upstream would otherwise make the patch a silent no-op
+and quietly restore the duplicate requests.
+
+**The bridge may no longer time out.** 2.6.5 taught `hsa2_bridge.py` to accept Apple's newer
+`flowid` in place of an echoed `sessionUUID`; on 2.5.0 that payload failed validation outright,
+which is why the bridge so reliably failed and `validate_2fa_code()` fell back to the legacy
+`_validate_trusted_device_code` endpoint. The reasoning recorded above about a raised
+`request_2fa_code()` still holding a working code was written against that fallback. It has not
+been re-verified against a live challenge on 2.6.5 — see `BACKLOG.md`.
 
 ## Dependencies
 
 - `pyfangs` (v0.7.3) — private library (`ssh://git@github.com/leandrorojas/pyfangs`): provides YamlHelper, FileSystem, terminal colors, Telegram (TelegramNotifier), and UTC conversion. The AI (GeminiAI) and DB (Postgres) modules are available as optional extras but not used here.
-- `pyicloud` (2.5.0) — iCloud API (calendar service, HSA2 2FA via trusted-device bridge)
+- `pyicloud` (2.6.5) — iCloud API (calendar service, HSA2 2FA via trusted-device bridge)
 - `icalendar` — ICS file parsing
 - `click` — used for interactive 2FA prompts. Declared directly in `pyproject.toml`: it used to arrive transitively via pyicloud, which dropped it in 2.6.5, so `import click` broke the moment that bump was attempted.
 
