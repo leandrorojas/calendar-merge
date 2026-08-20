@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Fixed
+
+- A 404 when deleting an iCloud event is now treated as the event already being gone, which
+  is what the action was asking for. pyicloud's `remove_event` fetches the etag through
+  `get_event_detail` first, so an event removed from another device between the iCloud load
+  and the delete raised there and aborted the run — and because `main()`'s source-calendar
+  loop catches only `YamlError`, that skipped every remaining source calendar too. Observed
+  2026-08-20. The outcome is logged, so a systemic fault making every delete 404 stays
+  visible instead of reading as success.
+
 ## [v0.1.11] — 2026-08-19
 
 ### Fixed

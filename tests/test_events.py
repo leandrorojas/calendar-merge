@@ -744,6 +744,94 @@ class TestSyncEventsToIcloud:
         with pytest.raises(RuntimeError, match="Unable to delete event"):
             merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
 
+    def test_delete_treats_404_as_already_gone(self, quiet_terminal):
+        """A 404 means the event is already absent, which is the goal of a delete.
+
+        Reproduces 2026-08-20: an event removed elsewhere between the iCloud load
+        and the delete aborted the entire run.
+        """
+
+        class NotFound(Exception):
+            code = merge.HTTP_NOT_FOUND
+
+        raw = icloud_raw_event()
+        service = FakeCalendarService(remove_error=NotFound("Not Found"))
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 12),
+                utc(2026, 8, 12, 13),
+                action=merge.EventAction.delete,
+                full_event=raw,
+            )
+        ]
+
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert any("was already gone" in line for line in quiet_terminal)
+
+    def test_delete_continues_with_later_events_after_a_404(self, quiet_terminal):
+        """The rest of the run must survive: main() only catches YamlError."""
+
+        class NotFound(Exception):
+            code = merge.HTTP_NOT_FOUND
+
+        service = FakeCalendarService(remove_error=NotFound("Not Found"))
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 12),
+                utc(2026, 8, 12, 13),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            ),
+            merge_event(utc(2026, 8, 12, 14), utc(2026, 8, 12, 15), action=merge.EventAction.add, title="[T] later"),
+        ]
+
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert len(service.added) == 1
+
+    def test_delete_still_raises_for_other_status_codes(self, quiet_terminal):
+        """Only 404 is benign; a 500 must still stop the run."""
+
+        class ServerError(Exception):
+            code = 500
+
+        service = FakeCalendarService(remove_error=ServerError("Server Error"))
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 12),
+                utc(2026, 8, 12, 13),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            )
+        ]
+
+        with pytest.raises(RuntimeError, match="Unable to delete event"):
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+    def test_delete_reads_404_from_an_attached_response(self, quiet_terminal):
+        """Apple answers a 404 without JSON, so it arrives as requests.HTTPError."""
+
+        class Response:
+            status_code = merge.HTTP_NOT_FOUND
+
+        class HttpError(Exception):
+            response = Response()
+
+        service = FakeCalendarService(remove_error=HttpError("404 Client Error"))
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 12),
+                utc(2026, 8, 12, 13),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            )
+        ]
+
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert any("was already gone" in line for line in quiet_terminal)
+
     def test_empty_list_is_a_noop(self):
         service = FakeCalendarService()
 
