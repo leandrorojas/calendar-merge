@@ -213,6 +213,29 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Both flags can be combined when you run the script twice per day (morning/evening).
 - To validate your Telegram setup, send a test message to the bot and confirm the script can deliver notifications to the configured `TELEGRAM_CHAT_ID`.
 
+## Scheduling
+
+`--first` and `--last` perform a full sync in addition to sending their Telegram message, so
+they replace a plain run rather than supplementing it.
+
+**Never schedule two invocations in the same minute.** Each run loads a snapshot of the iCloud
+calendar and then acts on it, so two concurrent processes work from the same stale picture:
+both may try to delete the same event — one wins, the other gets a `404` — and both may decide
+the same slot is missing and add it, leaving a duplicate until a later run reconciles it away.
+
+The trap is an hourly job overlapping a recurring one. `0 8 * * 1-5` and `*/15 8-17 * * 1-5`
+look independent but collide at 08:00. Give the flagged run its own slot:
+
+```cron
+0  8       * * 1-5   calendar-merge --first
+15,30,45 8 * * 1-5   calendar-merge
+*/15 9-17  * * 1-5   calendar-merge
+0  18      * * 1-5   calendar-merge --last
+```
+
+Same coverage, no shared minute. A 404 from a lost race no longer aborts the run as of
+v0.1.12, but duplicate creation is not similarly guarded — the schedule is the real fix.
+
 ## Notes
 
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
