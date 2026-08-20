@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import click
 import pyfangs.telegram as tg
 import pyfangs.terminal as term
+from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
 from icalendar import Calendar
 from pyfangs.filesystem import FileSystem
@@ -52,6 +53,10 @@ ICS_FIELD_DATE_END = "dtend"
 ICS_FIELD_TRANSPARENCY = "TRANSP"
 ICS_FIELD_PRODID = "PRODID"
 ICS_FIELD_MS_BUSY_STATUS = "X-MICROSOFT-CDO-BUSYSTATUS"
+ICS_FIELD_RRULE = "RRULE"
+ICS_FIELD_EXDATE = "EXDATE"
+ICS_FIELD_RECURRENCE_ID = "RECURRENCE-ID"
+ICS_FIELD_UID = "UID"
 
 # TRANSP means different things in practice depending on who wrote the feed, so
 # the same value cannot be interpreted the same way everywhere.
@@ -873,6 +878,97 @@ def _deduplicate_event_slots(events: list[MergeEvent]) -> list[MergeEvent]:
     return unique
 
 
+def _normalise_ics_datetime(value) -> datetime | None:
+    """Rebuild an ICS datetime to minute precision in UTC.
+
+    Returns None for anything that is not a datetime -- an all-day VEVENT carries a
+    `date`, which this module does not sync.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return convert_to_utc(datetime(value.year, value.month, value.day, value.hour, value.minute, tzinfo=value.tzinfo))
+
+
+def _collect_recurrence_overrides(ics_calendar: Calendar) -> set[tuple[str, datetime]]:
+    """`(UID, occurrence start)` pairs that a modified instance already accounts for.
+
+    A moved or edited occurrence is published as its own VEVENT carrying
+    `RECURRENCE-ID`, pointing at the slot in the series it replaces. Those VEVENTs
+    are parsed by the ordinary path, so expanding the master over the same slot
+    would place the meeting twice -- once at its new time and once at the original.
+    """
+    overrides: set[tuple[str, datetime]] = set()
+    for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
+        recurrence_id = get_from_list(file_event, ICS_FIELD_RECURRENCE_ID)
+        if recurrence_id is None:
+            continue
+        moment = _normalise_ics_datetime(recurrence_id.dt)
+        if moment is not None:
+            overrides.add((str(get_from_list(file_event, ICS_FIELD_UID) or ""), moment))
+    return overrides
+
+
+def _cancelled_occurrences(file_event) -> set[datetime]:
+    """Occurrences removed from a series with EXDATE.
+
+    Expanding without these invents busy time for meetings that were cancelled,
+    which is worse than the under-reporting it set out to fix: an absent event can
+    be checked against the source calendar, a phantom one is self-consistent.
+    """
+    raw = get_from_list(file_event, ICS_FIELD_EXDATE)
+    if raw is None:
+        return set()
+    cancelled: set[datetime] = set()
+    for entry in raw if isinstance(raw, list) else [raw]:
+        for stamp in getattr(entry, "dts", []):
+            moment = _normalise_ics_datetime(stamp.dt)
+            if moment is not None:
+                cancelled.add(moment)
+    return cancelled
+
+
+def _expand_recurrence(
+    file_event, uid: str, overrides: set[tuple[str, datetime]], window_start: datetime, window_end: datetime
+) -> list[tuple[datetime, datetime]]:
+    """The (start, end) slots a repeating VEVENT actually places inside the window.
+
+    `walk` yields only the series master, whose DTSTART is the *first* occurrence --
+    Outlook anchors that at the date the series was created, so a long-running weekly
+    meeting has a DTSTART far outside any forward-looking window and contributes
+    nothing at all without this.
+    """
+    rule_field = get_from_list(file_event, ICS_FIELD_RRULE)
+    start_field = get_from_list(file_event, ICS_FIELD_DATE_START)
+    end_field = get_from_list(file_event, ICS_FIELD_DATE_END)
+    if rule_field is None or start_field is None or end_field is None:
+        return []
+
+    anchor, finish = start_field.dt, end_field.dt
+    if not isinstance(anchor, datetime) or not isinstance(finish, datetime):
+        return []
+
+    try:
+        rule = rrulestr(rule_field.to_ical().decode(), dtstart=anchor)
+        # Expand in the series' own frame; comparing across offsets needs matching awareness.
+        lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)
+        upper = window_end.astimezone(anchor.tzinfo) if anchor.tzinfo else window_end.replace(tzinfo=None)
+        occurrences = rule.between(lower, upper, inc=True)
+    except Exception:  # a malformed rule must not sink the whole feed
+        logger.warning("could not expand a recurrence rule; contributing its original occurrence only")
+        return []
+
+    duration = finish - anchor
+    cancelled = _cancelled_occurrences(file_event)
+    slots: list[tuple[datetime, datetime]] = []
+    for occurrence in occurrences:
+        start = _normalise_ics_datetime(occurrence)
+        end = _normalise_ics_datetime(occurrence + duration)
+        if start is None or end is None or start in cancelled or (uid, start) in overrides:
+            continue
+        slots.append((start, end))
+    return slots
+
+
 def _parse_source_events(
     ics_calendar: Calendar, skip_days: list[str], utc_today_bod: datetime, utc_cut_off_date: datetime
 ) -> list[MergeEvent]:
@@ -880,8 +976,20 @@ def _parse_source_events(
     events: list[MergeEvent] = []
     # The dialect is a property of the feed, so resolve it once.
     google_feed = _is_google_feed(ics_calendar)
+    # Both are properties of the whole feed, so resolve them before the loop.
+    overrides = _collect_recurrence_overrides(ics_calendar)
     for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
         if _is_excluded_event(file_event, google_feed):
+            continue
+
+        if get_from_list(file_event, ICS_FIELD_RRULE) is not None:
+            uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
+            for start, end in _expand_recurrence(file_event, uid, overrides, utc_today_bod, utc_cut_off_date):
+                if str(start.weekday()) in skip_days:
+                    continue
+                events.append(MergeEvent(None, start, end, None, None))
+            # The master itself is only a template; its own DTSTART is the first
+            # occurrence and is already covered by the expansion when in range.
             continue
 
         start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
