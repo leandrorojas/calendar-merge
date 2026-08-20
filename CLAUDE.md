@@ -145,6 +145,25 @@ code. Two tells separate this from a real auth failure: the exception message ha
 is one, and no 2FA prompt is issued. Do not chase a session bug on this signature without
 checking both.
 
+**A 404 when deleting means the event is already gone, and is not an error.**
+`_sync_events_to_icloud` treats it as success. Deleting is idempotent in intent: the action
+asks for the event not to exist, and a 404 says it does not. pyicloud's `remove_event` fetches
+the etag through `get_event_detail` before issuing the DELETE, so an event removed from another
+device between `ICLOUD_CALENDAR_LOAD` and the delete raises there rather than at the delete.
+
+Aborting cost far more than the event. `main()`'s source-calendar loop catches only `YamlError`,
+so a `RuntimeError` escaped the loop and skipped **every remaining source calendar** — one event
+deleted on a phone sank the entire run, including calendars that had nothing to do with it.
+
+The outcome is logged rather than swallowed. If a systemic fault ever made every delete return
+404, the merge would otherwise report success while doing nothing at all — so the line saying an
+event "was already gone" appearing on every run is the signal to investigate.
+
+`_is_missing_event_error` reads `code` when pyicloud raises its own exception and falls back to
+the attached response's `status_code`: a 404 only becomes `PyiCloudAPIResponseException` when
+Apple answers with JSON, and arrives as `requests.HTTPError` when it does not. Only 404 is
+benign; every other status still stops the run.
+
 **Source feed quirks:** Outlook/Microsoft 365 feeds are plain ICS and need no dedicated code
 path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps
 to IANA zones, so the parsed datetimes arrive timezone-aware.
