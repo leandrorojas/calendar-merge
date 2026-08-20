@@ -108,26 +108,6 @@ where `from merge import main` raised `ModuleNotFoundError` on every installed c
 root — a few seconds of build time to guard a failure mode the entire test suite cannot
 observe.
 
-### The 2FA flow has never been verified end to end against Apple
-
-The 2FA retry loop, the six-digit filter, the Telegram acceptance message, and the
-session-trust-on-failure path are all covered by unit tests against a faked pyicloud.
-None has been exercised against a live Apple challenge since being written.
-
-The fakes encode behaviour read from the pyicloud source — including the trusted-device
-bridge posting step0 before the wait that times out — but a fake that agrees with a
-mistaken reading proves nothing. That reading has been wrong before.
-
-**Deliberately deferred:** verifying it means triggering a real 2FA challenge, which
-cannot be done on demand without disturbing a working session.
-
-Raised in importance by pyicloud 2.6.5: the bridge now accepts Apple's `flowid`, so it may
-succeed where it previously failed straight through to the legacy validation endpoint. The
-documented reasoning about a raised `request_2fa_code()` was written against that fallback
-path. The next real 2FA challenge is worth watching rather than merely surviving.
-
----
-
 ## Code health
 
 ### `_reconcile_events` exceeds the cognitive-complexity limit
