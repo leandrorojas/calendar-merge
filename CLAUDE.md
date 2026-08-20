@@ -152,6 +152,23 @@ code. Two tells separate this from a real auth failure: the exception message ha
 is one, and no 2FA prompt is issued. Do not chase a session bug on this signature without
 checking both.
 
+**Each source calendar reports what its sync changed.** `_sync_events_to_icloud` returns a
+`SyncOutcome` and `_process_source_calendar` logs it as
+`[MCP] meet/parat: 17 added, 2 deleted`, with `, N already gone` appended only when non-zero.
+
+Every other step in the pipeline announced itself — downloading, filtering, reconciling — and
+then the one step that actually mutates the calendar did so silently. Confirming a run had done
+anything meant inferring it from how long the process paused: watching the v0.1.14 deploy came
+down to reading a nine-second gap in the log and multiplying by an assumed round-trip time.
+
+An already-gone event is counted apart from a deletion. We did not delete it, and folding the
+two together would overstate what the run did — which matters because a systemic fault making
+every delete return 404 should look different from a run that genuinely removed events.
+
+Counting after the API call rather than before is not load-bearing: a failed add raises past the
+summary line, so nothing is reported either way. It is written that way because the count means
+"changed", not "attempted".
+
 **A 404 when deleting means the event is already gone, and is not an error.**
 `_sync_events_to_icloud` treats it as success. Deleting is idempotent in intent: the action
 asks for the event not to exist, and a 404 says it does not. pyicloud's `remove_event` fetches

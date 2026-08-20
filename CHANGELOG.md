@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [v0.1.15] — 2026-08-20
+
+### Added
+
+- Each source calendar now logs what its sync changed —
+  `[MCP] meet/parat: 17 added, 2 deleted`, with `, N already gone` appended when a delete found
+  the event already absent. Every other step in the pipeline announced itself while the one that
+  mutates the calendar stayed silent, so confirming a run had done anything meant inferring it
+  from how long the process paused. An already-gone event is counted apart from a deletion,
+  because we did not delete it.
+
 ## [v0.1.14] — 2026-08-20
 
 ### Added
