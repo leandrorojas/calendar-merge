@@ -624,6 +624,34 @@ class TestRecurrenceHelpers:
 
         assert merge._collect_recurrence_overrides(calendar) == set()
 
+    def test_an_override_without_a_uid_is_not_collected(self):
+        """An empty-string key would suppress that slot in every UID-less series."""
+        calendar = Calendar.from_ical(
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+            b"BEGIN:VEVENT\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART:20260811T150000Z\r\nDTEND:20260811T160000Z\r\n"
+            b"RECURRENCE-ID:20260811T120000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        assert merge._collect_recurrence_overrides(calendar) == set()
+
+    def test_a_uid_less_override_does_not_suppress_another_series(self):
+        events = parse(
+            [
+                {"uid": "", "start": "20260804T120000Z", "end": "20260804T130000Z", "rrule": "FREQ=WEEKLY;BYDAY=TU"},
+                {
+                    "uid": "",
+                    "start": "20260811T150000Z",
+                    "end": "20260811T160000Z",
+                    "recurrence_id": "20260811T120000Z",
+                },
+            ],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        assert utc(2026, 8, 11, 12) in [event.start for event in events]
+
     def test_overrides_ignore_events_without_a_recurrence_id(self):
         calendar = Calendar.from_ical(ics_bytes([{"start": "20260812T120000Z", "end": "20260812T130000Z"}]))
 
