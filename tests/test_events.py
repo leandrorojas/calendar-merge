@@ -1053,12 +1053,18 @@ class TestParseSourceEvents:
 CAL_TZ = ZoneInfo(BA_TZ)
 
 
+class ServerError(Exception):
+    """A non-404 API failure: fatal, unlike an already-deleted event."""
+
+    code = 500
+
+
 class TestSyncEventsToIcloud:
     def test_adds_events_marked_add(self):
         service = FakeCalendarService()
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add)]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert len(service.added) == 1
         added = service.added[0]
@@ -1069,7 +1075,7 @@ class TestSyncEventsToIcloud:
         service = FakeCalendarService()
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add)]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         # 12:00 UTC is 09:00 in Buenos Aires.
         assert service.added[0].start_date.hour == 9
@@ -1086,7 +1092,7 @@ class TestSyncEventsToIcloud:
             )
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert len(service.removed) == 1
         assert service.removed[0].guid == "g-1"
@@ -1096,7 +1102,7 @@ class TestSyncEventsToIcloud:
         service = FakeCalendarService()
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.none)]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert service.added == []
         assert service.removed == []
@@ -1115,7 +1121,7 @@ class TestSyncEventsToIcloud:
             ),
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert len(service.added) == 1
         assert len(service.removed) == 1
@@ -1125,7 +1131,7 @@ class TestSyncEventsToIcloud:
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add)]
 
         with pytest.raises(RuntimeError, match="Unable to add event"):
-            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert "<failed>" in quiet_terminal
 
@@ -1135,7 +1141,7 @@ class TestSyncEventsToIcloud:
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add)]
 
         with pytest.raises(RuntimeError) as excinfo:
-            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert excinfo.value.__cause__ is original
 
@@ -1152,7 +1158,7 @@ class TestSyncEventsToIcloud:
         ]
 
         with pytest.raises(RuntimeError, match="Unable to delete event"):
-            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
     def test_delete_treats_404_as_already_gone(self, quiet_terminal):
         """A 404 means the event is already absent, which is the goal of a delete.
@@ -1175,7 +1181,7 @@ class TestSyncEventsToIcloud:
             )
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert any("was already gone" in line for line in quiet_terminal)
 
@@ -1196,7 +1202,7 @@ class TestSyncEventsToIcloud:
             merge_event(utc(2026, 8, 12, 14), utc(2026, 8, 12, 15), action=merge.EventAction.add, title="[T] later"),
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert len(service.added) == 1
 
@@ -1217,7 +1223,7 @@ class TestSyncEventsToIcloud:
         ]
 
         with pytest.raises(RuntimeError, match="Unable to delete event"):
-            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
     def test_delete_reads_404_from_an_attached_response(self, quiet_terminal):
         """Apple answers a 404 without JSON, so it arrives as requests.HTTPError."""
@@ -1238,7 +1244,7 @@ class TestSyncEventsToIcloud:
             )
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert any("was already gone" in line for line in quiet_terminal)
 
@@ -1257,7 +1263,7 @@ class TestSyncEventsToIcloud:
             merge_event(utc(2026, 8, 12, 18), utc(2026, 8, 12, 19), action=merge.EventAction.none),
         ]
 
-        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert (outcome.added, outcome.deleted, outcome.already_gone) == (2, 1, 0)
 
@@ -1273,7 +1279,7 @@ class TestSyncEventsToIcloud:
             ),
         ]
 
-        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert (outcome.added, outcome.deleted) == (len(service.added), len(service.removed))
 
@@ -1293,19 +1299,117 @@ class TestSyncEventsToIcloud:
             )
         ]
 
-        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert (outcome.deleted, outcome.already_gone) == (0, 1)
 
+    def test_the_summary_comes_after_the_step_is_closed(self, quiet_terminal):
+        """Ordering is load-bearing, not cosmetic.
+
+        The caller opens an unterminated "synchronizing..." line. Anything printed
+        before `print_done()` closes it is glued onto that line, leaving "done!"
+        orphaned on the next -- on every source, on every run.
+        """
+        service = FakeCalendarService()
+        events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
+
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
+
+        summary = next(index for index, line in enumerate(quiet_terminal) if "1 added" in line)
+        closed = next(index for index, line in enumerate(quiet_terminal) if line == "<done>")
+        assert closed < summary
+
+    def test_a_failure_closes_the_step_before_the_summary(self, quiet_terminal):
+        """The failure path closes the line with print_failed instead."""
+        events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
+
+        class AlwaysFails(FakeCalendarService):
+            def add_event(self, event):
+                raise ServerError("Server Error")
+
+        with pytest.raises(RuntimeError):
+            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+
+        summary = next(index for index, line in enumerate(quiet_terminal) if "0 added" in line)
+        closed = next(index for index, line in enumerate(quiet_terminal) if line == "<failed>")
+        assert closed < summary
+        assert "<done>" not in quiet_terminal
+
+    def test_a_partial_sync_still_reports_what_it_managed(self, quiet_terminal):
+        """The case the report matters most for, and the one it used to skip.
+
+        A run that mutates the calendar and then fails leaves work the calendar
+        alone cannot explain. Reporting only the failure hides it.
+        """
+
+        class PartialFailure(FakeCalendarService):
+            def add_event(self, event):
+                if len(self.added) >= 2:
+                    raise ServerError("Server Error")
+                return super().add_event(event)
+
+        service = PartialFailure()
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 10 + index),
+                utc(2026, 8, 12, 11 + index),
+                action=merge.EventAction.add,
+                title=f"[T] {index}",
+            )
+            for index in range(4)
+        ]
+
+        with pytest.raises(RuntimeError, match="Unable to add event"):
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
+
+        assert any("[T] source: 2 added, 0 deleted" in line for line in quiet_terminal)
+
+    def test_a_failed_add_is_not_counted(self, quiet_terminal):
+        """The tally means 'changed', not 'attempted'.
+
+        Only observable because the report now survives the abort -- counting order
+        was untestable while a failure skipped the line entirely.
+        """
+
+        class AlwaysFails(FakeCalendarService):
+            def add_event(self, event):
+                raise ServerError("Server Error")
+
+        events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
+
+        with pytest.raises(RuntimeError):
+            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+
+        assert any("[T] source: 0 added, 0 deleted" in line for line in quiet_terminal)
+
+    def test_a_failed_delete_is_not_counted(self, quiet_terminal):
+        class AlwaysFails(FakeCalendarService):
+            def remove_event(self, event):
+                raise ServerError("Server Error")
+
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 12),
+                utc(2026, 8, 12, 13),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            )
+        ]
+
+        with pytest.raises(RuntimeError):
+            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+
+        assert any("[T] source: 0 added, 0 deleted" in line for line in quiet_terminal)
+
     def test_an_empty_sync_reports_zeroes(self):
-        outcome = merge._sync_events_to_icloud(FakeCalendarService(), "cal-guid", CAL_TZ, [])
+        outcome = merge._sync_events_to_icloud(FakeCalendarService(), "cal-guid", CAL_TZ, [], "[T] source")
 
         assert (outcome.added, outcome.deleted, outcome.already_gone) == (0, 0, 0)
 
     def test_empty_list_is_a_noop(self):
         service = FakeCalendarService()
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, [])
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, [], "[T] source")
 
         assert service.added == []
         assert service.removed == []
@@ -1322,7 +1426,7 @@ class TestSyncEventsToIcloud:
             merge_event(utc(2026, 8, 13, 12), utc(2026, 8, 13, 13), action=merge.EventAction.add),
         ]
 
-        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert len(service.added) == 1
         assert service.removed == []

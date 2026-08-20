@@ -165,9 +165,15 @@ An already-gone event is counted apart from a deletion. We did not delete it, an
 two together would overstate what the run did — which matters because a systemic fault making
 every delete return 404 should look different from a run that genuinely removed events.
 
-Counting after the API call rather than before is not load-bearing: a failed add raises past the
-summary line, so nothing is reported either way. It is written that way because the count means
-"changed", not "attempted".
+The report is emitted from a `finally` inside `_sync_events_to_icloud`, not by its caller. A
+mid-sync failure is exactly when it matters — the calendar has been mutated and nothing else says
+by how much — and a summary printed after the call returns is skipped by the raise. It cannot
+live in the caller either: `outcome` is unbound there when the call raises.
+
+That also makes counting order load-bearing. The tally counts after each API call succeeds, so it
+means "changed" rather than "attempted"; counting before would report a failed add as a change.
+An earlier note here called that an equivalent mutant, which was true only while a failure
+skipped the report entirely — it is now killed by two tests.
 
 **A 404 when deleting means the event is already gone, and is not an error.**
 `_sync_events_to_icloud` treats it as success. Deleting is idempotent in intent: the action

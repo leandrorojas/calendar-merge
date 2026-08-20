@@ -1112,10 +1112,39 @@ def _is_missing_event_error(err: BaseException) -> bool:
 
 
 def _sync_events_to_icloud(
-    calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent]
+    calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent], source_tag: str
 ) -> SyncOutcome:
-    """Apply add/delete actions to the iCloud calendar, reporting what changed."""
+    """Apply add/delete actions to the iCloud calendar, reporting what changed.
+
+    The report is emitted from a `finally`, so a run that mutates the calendar and
+    then fails still says what it managed to do. Without that, the case where the
+    log matters most -- a partial sync, where the calendar alone cannot tell you
+    whether anything ran -- is the one case it stayed silent about.
+
+    Owning `term.print_done()` comes with that: the caller opens an unterminated
+    "synchronizing..." line, and anything printed before it is closed lands glued to
+    it. Since the failure path already closes the line via `term.print_failed()`,
+    both ends now belong here.
+    """
     outcome = SyncOutcome()
+    try:
+        _apply_event_actions(calendar_service, calendar_guid, calendar_tz, merge_events, outcome)
+        # Completes the caller's pending "synchronizing..." line before the summary is
+        # written, or the summary is appended to that line and "done!" is orphaned.
+        # The failure path is already closed by term.print_failed() at the raise site.
+        term.print_done()
+    finally:
+        summary = f"{source_tag}: {outcome.added} added, {outcome.deleted} deleted"
+        if outcome.already_gone:
+            summary += f", {outcome.already_gone} already gone"
+        print_step(TAG_CALENDAR_MERGE, summary)
+    return outcome
+
+
+def _apply_event_actions(
+    calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent], outcome: SyncOutcome
+) -> None:
+    """Add and delete events, tallying into `outcome` as each call succeeds."""
     actionable_events = [event for event in merge_events if event.action != EventAction.none]
     for merge_event in actionable_events:
         if merge_event.action == EventAction.add:
@@ -1154,8 +1183,6 @@ def _sync_events_to_icloud(
                 # silently doing nothing.
                 outcome.already_gone += 1
                 print_step(TAG_CALENDAR_MERGE, f"{merge_event.title} was already gone from iCloud")
-
-    return outcome
 
 
 # endregion
@@ -1361,15 +1388,10 @@ def _process_source_calendar(
     term.print_done()
 
     print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
-    outcome = _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events)
-    term.print_done()
-
-    # Logged per source rather than per run: a total says the merge did something,
-    # this says which calendar it happened to.
-    summary = f"{source_tag}: {outcome.added} added, {outcome.deleted} deleted"
-    if outcome.already_gone:
-        summary += f", {outcome.already_gone} already gone"
-    print_step(TAG_CALENDAR_MERGE, summary)
+    # Reported per source rather than per run: a total says the merge did something,
+    # this says which calendar it happened to. Emitted inside the call so it survives
+    # a mid-sync failure.
+    _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events, source_tag)
 
 
 # endregion
