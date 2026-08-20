@@ -20,6 +20,15 @@ tagged in git.
   ones twice. An unreadable rule falls back to the master's own occurrence rather than
   dropping the meeting.
 
+  `RDATE` extras are included, a `DTSTART` that does not match its own rule is kept (RFC 5545
+  makes it an occurrence; dateutil omits it, which would have lost meetings that synced before
+  expansion existed), and a VEVENT carrying both `RECURRENCE-ID` and `RRULE` is treated as the
+  `THISANDFUTURE` split it is rather than as an override of itself.
+
+- `python-dateutil` is declared as a direct dependency. `merge.py` imports it to expand rules
+  and it arrived transitively via `icalendar` — the same accident that broke `import click`
+  when pyicloud dropped it.
+
 ## [v0.1.13] — 2026-08-20
 
 ### Added

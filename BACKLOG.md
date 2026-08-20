@@ -11,6 +11,18 @@ program *does*, how it is *operated*, or how it is *verified*.
 
 ## Functional
 
+### A pathological recurrence rule can stall a run
+
+`_expand_recurrence` calls `rule.between()`, which iterates from `DTSTART` forward with no cap.
+A high-frequency rule anchored far in the past therefore costs time proportional to the gap, not
+to the window: measured at **1.7s for a single `FREQ=MINUTELY` event anchored 2023-01-01** against
+a one-hour window. Daily or coarser rules are negligible, and the three live feeds contain none
+finer than weekly.
+
+**Deferred.** Any cap risks dropping legitimate occurrences, and the failure mode is a slow run
+rather than a wrong one — the merge still produces correct output. Worth revisiting only if a
+feed ever ships sub-hourly recurrence.
+
 ### The date window follows the host timezone
 
 `src/merge.py:984` computes the window from `datetime.now().astimezone()`, so "today"
