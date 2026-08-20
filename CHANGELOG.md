@@ -18,6 +18,12 @@ tagged in git.
   This also makes the tally's counting order observable, so a failed add is now provably not
   counted as a change.
 
+- The summary no longer breaks the `synchronizing...` step. Emitting it inside the sync put it
+  before the caller's `term.print_done()`, so it was appended to that unterminated line and left
+  `done!` orphaned on the next — on every source, on every run. `print_done()` moved in with it;
+  the failure path already closed the line via `term.print_failed()`, so both ends of the line
+  now belong to the same function.
+
 ## [v0.1.15] — 2026-08-20
 
 ### Added
