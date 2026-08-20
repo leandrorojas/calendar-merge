@@ -127,6 +127,9 @@ ERROR_CAUSE_DEPTH = 3
 # Bounds the whole message at roughly (ERROR_CAUSE_DEPTH + 1) * this.
 ERROR_PART_MAX_CHARS = 300
 
+# A delete that returns this has already achieved what it was asked to do.
+HTTP_NOT_FOUND = 404
+
 # Regex to strip ANSI color codes (e.g., TAG_* constants include terminal colors)
 # so file logs stay clean.
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -925,6 +928,19 @@ def _parse_source_events(
     return _deduplicate_event_slots(events)
 
 
+def _is_missing_event_error(err: BaseException) -> bool:
+    """True when the API reports the event is not there.
+
+    Read from `code` when pyicloud raises its own exception and from the attached
+    response otherwise: a 404 only reaches `PyiCloudAPIResponseException` when
+    Apple answers with JSON, and surfaces as `requests.HTTPError` when it does not.
+    """
+    code = getattr(err, "code", None)
+    if code is None:
+        code = getattr(getattr(err, "response", None), "status_code", None)
+    return str(code) == str(HTTP_NOT_FOUND)
+
+
 def _sync_events_to_icloud(
     calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent]
 ) -> None:
@@ -952,8 +968,18 @@ def _sync_events_to_icloud(
             try:
                 calendar_service.remove_event(remove_event)
             except Exception as err:
-                term.print_failed()
-                raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
+                # Deleting is idempotent in intent: a 404 means the event is already
+                # gone, which is what the action was asking for. Aborting there costs
+                # the rest of this calendar *and* every source calendar after it,
+                # because the loop in main() only catches YamlError -- so one event
+                # removed from a phone would sink the whole run.
+                if not _is_missing_event_error(err):
+                    term.print_failed()
+                    raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
+                # Logged rather than swallowed: if a systemic fault ever made every
+                # delete return 404, the merge would otherwise report success while
+                # silently doing nothing.
+                print_step(TAG_CALENDAR_MERGE, f"{merge_event.title} was already gone from iCloud")
 
 
 # endregion
