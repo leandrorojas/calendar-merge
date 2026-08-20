@@ -13,6 +13,21 @@ tagged in git.
   2026-08-20 and can also create duplicate events. Written down because the collision came
   from two cron lines that look independent — `0 8 * * 1-5` and `*/15 8-17 * * 1-5`.
 
+## [Unreleased]
+
+### Security
+
+- Lockfile upgraded, clearing all 15 Dependabot advisories found when alerts were switched on:
+  `cryptography` 46.0.3 → 50.0.0 (5 advisories, 4 high), `urllib3` 2.5.0 → 2.7.0 (4 high),
+  `requests` 2.32.5 → 2.34.2, `idna` 3.11 → 3.19, `python-dotenv` 1.1.1 → 1.2.3 and
+  `Pygments` 2.19.2 → 2.21.0. All were transitive; none was reachable from a pin in
+  `pyproject.toml`. `pyicloud` stays at 2.6.5.
+
+  Verified past the test suite, which fakes pyicloud and patches `load_dotenv`: `icalendar`
+  7.3.0 produces byte-identical results to 7.2.2 on all three live feeds (same totals, same
+  kept counts, same slot hashes), the `python-telegram-bot` 22.8 surface `pyfangs` calls is
+  unchanged, and `load_dotenv` still reads a real file.
+
 ## [v0.1.12] — 2026-08-20
 
 ### Fixed
