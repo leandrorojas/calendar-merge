@@ -119,6 +119,14 @@ LOG_BACKUP_COUNT = 5
 # short enough that the message stays readable on a phone.
 ERROR_CAUSE_DEPTH = 3
 
+# Per-part ceiling for an alert. pyicloud embeds the whole HTTP response body in
+# PyiCloudAPIResponseException's message, so an Apple error page would otherwise
+# arrive verbatim. Telegram rejects anything past 4096 characters and
+# send_telegram_message swallows the failure, which would drop the alert entirely
+# -- the worse the upstream error, the more certainly you would hear nothing.
+# Bounds the whole message at roughly (ERROR_CAUSE_DEPTH + 1) * this.
+ERROR_PART_MAX_CHARS = 300
+
 # Regex to strip ANSI color codes (e.g., TAG_* constants include terminal colors)
 # so file logs stay clean.
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -163,6 +171,14 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
+def _condense(text: str, limit: int = ERROR_PART_MAX_CHARS) -> str:
+    """Flatten to one line and bound the length, for alerts that must stay sendable."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "\u2026"
+
+
 def _describe_error(err: BaseException) -> str:
     """Render an exception together with the causes it was raised from.
 
@@ -189,10 +205,11 @@ def _describe_error(err: BaseException) -> str:
 
     while cause is not None and len(parts) < ERROR_CAUSE_DEPTH and id(cause) not in seen:
         seen.add(id(cause))
-        parts.append(f"{type(cause).__name__}: {cause}".strip())
+        detail = _condense(str(cause))
+        parts.append(f"{type(cause).__name__}: {detail}" if detail else type(cause).__name__)
         cause = cause.__cause__
 
-    message = str(err) or type(err).__name__
+    message = _condense(str(err)) or type(err).__name__
     if not parts:
         return message
     return f"{message} ({' <- '.join(parts)})"
