@@ -903,8 +903,11 @@ def _collect_recurrence_overrides(ics_calendar: Calendar) -> set[tuple[str, date
         if recurrence_id is None:
             continue
         moment = _normalise_ics_datetime(recurrence_id.dt)
-        if moment is not None:
-            overrides.add((str(get_from_list(file_event, ICS_FIELD_UID) or ""), moment))
+        uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
+        # Without a UID the override cannot be attributed, and keying it on the empty
+        # string would let it suppress that slot in every other UID-less series.
+        if moment is not None and uid:
+            overrides.add((uid, moment))
     return overrides
 
 
@@ -958,8 +961,11 @@ def _expand_recurrence(
         lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)
         upper = window_end.astimezone(anchor.tzinfo) if anchor.tzinfo else window_end.replace(tzinfo=None)
         occurrences = rule.between(lower, upper, inc=True)
-    except Exception:  # a malformed rule must not sink the whole feed
-        logger.warning("could not expand a recurrence rule; contributing its original occurrence only")
+    except Exception:
+        # Deliberately broad: this parses third-party feed data, and one unreadable
+        # rule among hundreds of events must not sink the whole sync. exc_info keeps
+        # it diagnosable rather than merely survivable.
+        logger.warning("could not expand a recurrence rule; contributing its original occurrence only", exc_info=True)
         return None
 
     duration = finish - anchor
