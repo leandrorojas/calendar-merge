@@ -243,6 +243,20 @@ class EventAction(Enum):
 
 
 @dataclass
+class SyncOutcome:
+    """What one source calendar's sync actually changed.
+
+    Every other step in the pipeline announces itself, and then the one that mutates
+    the calendar used to do so silently -- so confirming a run had done anything meant
+    inferring it from how long the process paused.
+    """
+
+    added: int = 0
+    deleted: int = 0
+    already_gone: int = 0
+
+
+@dataclass
 class MergeEvent:
     title: str | None
     start: datetime
@@ -1099,8 +1113,9 @@ def _is_missing_event_error(err: BaseException) -> bool:
 
 def _sync_events_to_icloud(
     calendar_service, calendar_guid: str, calendar_tz: ZoneInfo, merge_events: list[MergeEvent]
-) -> None:
-    """Apply add/delete actions to the iCloud calendar."""
+) -> SyncOutcome:
+    """Apply add/delete actions to the iCloud calendar, reporting what changed."""
+    outcome = SyncOutcome()
     actionable_events = [event for event in merge_events if event.action != EventAction.none]
     for merge_event in actionable_events:
         if merge_event.action == EventAction.add:
@@ -1113,6 +1128,7 @@ def _sync_events_to_icloud(
                         end_date=merge_event.end.astimezone(calendar_tz),
                     )
                 )
+                outcome.added += 1
             except Exception as err:
                 term.print_failed()
                 raise RuntimeError(f"Unable to add event {merge_event.title}") from err
@@ -1123,6 +1139,7 @@ def _sync_events_to_icloud(
             )
             try:
                 calendar_service.remove_event(remove_event)
+                outcome.deleted += 1
             except Exception as err:
                 # Deleting is idempotent in intent: a 404 means the event is already
                 # gone, which is what the action was asking for. Aborting there costs
@@ -1135,7 +1152,10 @@ def _sync_events_to_icloud(
                 # Logged rather than swallowed: if a systemic fault ever made every
                 # delete return 404, the merge would otherwise report success while
                 # silently doing nothing.
+                outcome.already_gone += 1
                 print_step(TAG_CALENDAR_MERGE, f"{merge_event.title} was already gone from iCloud")
+
+    return outcome
 
 
 # endregion
@@ -1341,8 +1361,15 @@ def _process_source_calendar(
     term.print_done()
 
     print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
-    _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events)
+    outcome = _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events)
     term.print_done()
+
+    # Logged per source rather than per run: a total says the merge did something,
+    # this says which calendar it happened to.
+    summary = f"{source_tag}: {outcome.added} added, {outcome.deleted} deleted"
+    if outcome.already_gone:
+        summary += f", {outcome.already_gone} already gone"
+    print_step(TAG_CALENDAR_MERGE, summary)
 
 
 # endregion
