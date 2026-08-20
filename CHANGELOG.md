@@ -4,7 +4,7 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
-## [Unreleased]
+## [v0.1.12] — 2026-08-20
 
 ### Fixed
 
@@ -15,6 +15,11 @@ tagged in git.
   loop catches only `YamlError`, that skipped every remaining source calendar too. Observed
   2026-08-20. The outcome is logged, so a systemic fault making every delete 404 stays
   visible instead of reading as success.
+
+  Root cause of the observed instance was not another device: the crontab fired the
+  `--first` job and the every-15-minutes job in the same minute, so two processes loaded
+  the same snapshot and both tried the delete. The schedule is the real remedy; this change
+  stops one losing process from aborting a whole run.
 
 ## [v0.1.11] — 2026-08-19
 
