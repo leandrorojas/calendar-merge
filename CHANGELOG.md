@@ -4,26 +4,6 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
-## [Unreleased]
-
-### Fixed
-
-- A sync that fails partway now reports what it managed before the failure propagates. The
-  summary added in v0.1.15 was emitted after `_sync_events_to_icloud` returned, so any error
-  skipped it — and a mid-sync failure is precisely when the report matters, because the calendar
-  has been mutated and nothing says by how much. Concretely: 16 of 17 adds succeed, the 17th
-  returns a 500, and the log recorded only the failure.
-
-  Moved into a `finally` inside the sync, which already emits the per-event "already gone" line.
-  This also makes the tally's counting order observable, so a failed add is now provably not
-  counted as a change.
-
-- The summary no longer breaks the `synchronizing...` step. Emitting it inside the sync put it
-  before the caller's `term.print_done()`, so it was appended to that unterminated line and left
-  `done!` orphaned on the next — on every source, on every run. `print_done()` moved in with it;
-  the failure path already closed the line via `term.print_failed()`, so both ends of the line
-  now belong to the same function.
-
 ## [v0.1.15] — 2026-08-20
 
 ### Added
@@ -32,8 +12,22 @@ tagged in git.
   `[MCP] meet/parat: 17 added, 2 deleted`, with `, N already gone` appended when a delete found
   the event already absent. Every other step in the pipeline announced itself while the one that
   mutates the calendar stayed silent, so confirming a run had done anything meant inferring it
-  from how long the process paused. An already-gone event is counted apart from a deletion,
-  because we did not delete it.
+  from how long the process paused.
+
+  Three details matter more than they look:
+
+  - **An already-gone event is counted apart from a deletion.** We did not delete it, and folding
+    the two together would overstate a run's effect — a systemic fault making every delete return
+    404 should not read like a run that genuinely removed events.
+  - **The report is emitted from a `finally` inside `_sync_events_to_icloud`.** A mid-sync failure
+    is exactly when it matters, because the calendar has been mutated and nothing else says by how
+    much; a summary written after the call returned would be skipped by the raise. It cannot live
+    in the caller either, where `outcome` is unbound once the call raises. This also makes the
+    tally's counting order observable, so a failed add is provably not counted as a change.
+  - **`term.print_done()` moved in with it.** The caller opens an unterminated `synchronizing...`
+    line, so anything printed before that line is closed gets glued onto it, orphaning `done!`.
+    The failure path already closed the line via `term.print_failed()`, so both ends of the line
+    now belong to the same function.
 
 ## [v0.1.14] — 2026-08-20
 
