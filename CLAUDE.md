@@ -187,11 +187,34 @@ means choosing new bounds. Deduplication is per calendar, so two sources holding
 contribute one event each under their own tags. Note `_reconcile_events` still preserves
 multiplicity if handed duplicates directly; the invariant comes from the parse step.
 
-**Recurring events are not expanded.** `walk(ICS_TAG_VEVENT)` yields the series master, not its
-occurrences, so a repeating meeting contributes at most its original `DTSTART`. Outlook anchors
-series at their original start date, so long-running weekly meetings can contribute nothing to a
-forward-looking window. Expanding them needs RRULE handling plus `EXDATE`/`RECURRENCE-ID`
-overrides.
+**Recurring events are expanded, and the expansion is the delicate part.**
+`walk(ICS_TAG_VEVENT)` yields only the series master, whose `DTSTART` is the *first* occurrence.
+Outlook anchors a series at the date it was created, so a long-running weekly meeting sits far
+outside any forward-looking window and used to contribute **nothing at all** — measured
+2026-08-20, the Outlook feed produced 2 events for a 12-day window where it should have produced
+19.
+
+Only Outlook needs this. Google pre-expands server-side: its feeds carry **0** `RRULE` and
+thousands of `RECURRENCE-ID` VEVENTs, one per occurrence. That is why the gap never showed on the
+Google calendars despite their being most of the event volume.
+
+Three rules make the expansion safe rather than merely fuller:
+
+- **`EXDATE` cancels occurrences.** Skipping this creates events for meetings that were called
+  off. That is worse than the under-reporting it fixes: an absent event can be checked against
+  the source calendar, a phantom one is self-consistent and blocks time that is genuinely free.
+- **`RECURRENCE-ID` overrides replace a slot.** A moved occurrence is published as its own
+  VEVENT, which the ordinary path already parses, so the master must skip that slot or the
+  meeting lands at both its new and its original time. Matching is on `(UID, occurrence start)`
+  — time alone would let one series suppress another's slot.
+- **The master must not also flow through the ordinary path.** Its `DTSTART` is itself an
+  occurrence, so a first occurrence removed by `EXDATE` or replaced by an override would
+  reappear. `_deduplicate_event_slots` hides this in the ordinary case, which is what makes it
+  worth a test rather than a comment.
+
+`_expand_recurrence` returns `None`, distinct from `[]`, when a rule cannot be parsed. `[]` means
+the series genuinely places nothing in the window; `None` falls back to treating the master as a
+plain event, so an unreadable rule costs its repeats rather than the meeting itself.
 
 **2FA code entry over Telegram.** `_validate_2fa_trusted_device` retries the prompt up to
 `TWO_FACTOR_CODE_ATTEMPTS` times, because a human types the code and one mistyped digit used to

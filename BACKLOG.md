@@ -11,26 +11,6 @@ program *does*, how it is *operated*, or how it is *verified*.
 
 ## Functional
 
-### Recurring events are not expanded
-
-`_parse_source_events` (`src/merge.py:820`) iterates `ics_calendar.walk(ICS_TAG_VEVENT)`,
-which yields the **series master**, not its occurrences. A repeating meeting therefore
-contributes at most its original `DTSTART`.
-
-Outlook anchors a series at the date it was first created, so a weekly meeting set up
-last year has a `DTSTART` far outside any forward-looking window and contributes
-**nothing at all**.
-
-**Measured impact:** roughly 6 of ~18 weekly occurrences reach iCloud on the Outlook feed.
-This is the largest known functional gap in the product.
-
-**A fix needs:** RRULE expansion, plus `EXDATE` and `RECURRENCE-ID` override handling.
-Skipping the override handling would resurrect cancelled and moved occurrences, which is
-worse than the current under-reporting — the current failure omits busy time, that one
-would invent it.
-
-Already described in `CLAUDE.md` under *Recurring events are not expanded*.
-
 ### The date window follows the host timezone
 
 `src/merge.py:984` computes the window from `datetime.now().astimezone()`, so "today"

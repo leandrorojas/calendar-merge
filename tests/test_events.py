@@ -504,6 +504,54 @@ class TestRecurrenceExpansion:
         # The broken master is outside the window, so only the ordinary event lands.
         assert [event.start for event in events] == [utc(2026, 8, 5, 12)]
 
+    def test_a_cancelled_first_occurrence_is_not_resurrected(self):
+        """The master must not be emitted alongside its own expansion.
+
+        DTSTART is itself an occurrence. If the master also flows through the
+        ordinary path, a first occurrence removed by EXDATE reappears -- inventing
+        busy time for a meeting that was cancelled.
+        """
+        events = parse(
+            [
+                {
+                    "start": "20260804T120000Z",
+                    "end": "20260804T130000Z",
+                    "rrule": "FREQ=WEEKLY;BYDAY=TU",
+                    "exdate": "20260804T120000Z",
+                }
+            ],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        assert utc(2026, 8, 4, 12) not in [event.start for event in events]
+        assert utc(2026, 8, 11, 12) in [event.start for event in events]
+
+    def test_an_overridden_first_occurrence_is_not_left_behind(self):
+        """Same trap via RECURRENCE-ID: the moved meeting must not also sit at its old time."""
+        events = parse(
+            [
+                {
+                    "uid": "series@test",
+                    "start": "20260804T120000Z",
+                    "end": "20260804T130000Z",
+                    "rrule": "FREQ=WEEKLY;BYDAY=TU",
+                },
+                {
+                    "uid": "series@test",
+                    "start": "20260804T160000Z",
+                    "end": "20260804T170000Z",
+                    "recurrence_id": "20260804T120000Z",
+                },
+            ],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        starts = [event.start for event in events]
+        assert utc(2026, 8, 4, 16) in starts
+        assert utc(2026, 8, 4, 12) not in starts
+
     def test_expanded_occurrences_are_deduplicated(self):
         """Two series landing on the same slot collapse, as any other pair would."""
         events = parse(
