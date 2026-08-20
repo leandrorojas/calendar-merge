@@ -329,7 +329,9 @@ and quietly restore the duplicate requests.
 which is why the bridge so reliably failed and `validate_2fa_code()` fell back to the legacy
 `_validate_trusted_device_code` endpoint. The reasoning recorded above about a raised
 `request_2fa_code()` still holding a working code was written against that fallback. It has not
-been re-verified against a live challenge on 2.6.5 — see `BACKLOG.md`.
+been re-verified against a live challenge on 2.6.5, and is not tracked as outstanding work: the
+next expiry exercises it on its own. If a challenge ever delivers both a device push **and** an
+SMS, the class patch in `_disable_automatic_2fa_requests` is not holding.
 
 ## Dependencies
 
