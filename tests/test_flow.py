@@ -344,6 +344,51 @@ def process(
     return fs, service
 
 
+class TestSyncSummaryLine:
+    """The line that makes a run's effect readable without inferring it from timing."""
+
+    def test_reports_the_tally_against_its_source(self, monkeypatch, tmp_path, quiet_terminal):
+        process(
+            monkeypatch,
+            tmp_path,
+            ics_events=[
+                {"start": "20260812T120000Z", "end": "20260812T130000Z"},
+                {"start": "20260812T140000Z", "end": "20260812T150000Z"},
+            ],
+        )
+
+        assert any("[W] Google/Work: 2 added, 0 deleted" in line for line in quiet_terminal)
+
+    def test_omits_already_gone_when_there_is_none(self, monkeypatch, tmp_path, quiet_terminal):
+        process(monkeypatch, tmp_path, ics_events=[{"start": "20260812T120000Z", "end": "20260812T130000Z"}])
+
+        summary = [line for line in quiet_terminal if "added," in line]
+        assert summary and "already gone" not in summary[0]
+
+    def test_mentions_already_gone_when_it_happens(self, monkeypatch, tmp_path, quiet_terminal):
+        class NotFound(Exception):
+            code = merge.HTTP_NOT_FOUND
+
+        # An iCloud event with no matching source event is reconciled to a delete.
+        process(
+            monkeypatch,
+            tmp_path,
+            ics_events=[],
+            icloud_events=[
+                merge.MergeEvent(
+                    "[W] Google/Work",
+                    utc(2026, 8, 12, 12),
+                    utc(2026, 8, 12, 13),
+                    icloud_raw_event(),
+                    None,
+                )
+            ],
+            calendar_service=FakeCalendarService(remove_error=NotFound("Not Found")),
+        )
+
+        assert any("0 added, 0 deleted, 1 already gone" in line for line in quiet_terminal)
+
+
 class TestProcessSourceCalendar:
     def test_adds_new_source_event_with_composed_title(self, monkeypatch, tmp_path):
         _, service = process(

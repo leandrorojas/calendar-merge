@@ -1242,6 +1242,66 @@ class TestSyncEventsToIcloud:
 
         assert any("was already gone" in line for line in quiet_terminal)
 
+    def test_reports_what_it_changed(self):
+        """The sync used to be the only silent step, so a run's effect was unobservable."""
+        service = FakeCalendarService()
+        events = [
+            merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a"),
+            merge_event(utc(2026, 8, 12, 14), utc(2026, 8, 12, 15), action=merge.EventAction.add, title="[T] b"),
+            merge_event(
+                utc(2026, 8, 12, 16),
+                utc(2026, 8, 12, 17),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            ),
+            merge_event(utc(2026, 8, 12, 18), utc(2026, 8, 12, 19), action=merge.EventAction.none),
+        ]
+
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert (outcome.added, outcome.deleted, outcome.already_gone) == (2, 1, 0)
+
+    def test_counts_match_what_the_service_saw(self):
+        service = FakeCalendarService()
+        events = [
+            merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a"),
+            merge_event(
+                utc(2026, 8, 12, 16),
+                utc(2026, 8, 12, 17),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            ),
+        ]
+
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert (outcome.added, outcome.deleted) == (len(service.added), len(service.removed))
+
+    def test_an_already_gone_event_is_not_counted_as_deleted(self, quiet_terminal):
+        """We did not delete it -- reporting otherwise would overstate the run's effect."""
+
+        class NotFound(Exception):
+            code = merge.HTTP_NOT_FOUND
+
+        service = FakeCalendarService(remove_error=NotFound("Not Found"))
+        events = [
+            merge_event(
+                utc(2026, 8, 12, 16),
+                utc(2026, 8, 12, 17),
+                action=merge.EventAction.delete,
+                full_event=icloud_raw_event(),
+            )
+        ]
+
+        outcome = merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events)
+
+        assert (outcome.deleted, outcome.already_gone) == (0, 1)
+
+    def test_an_empty_sync_reports_zeroes(self):
+        outcome = merge._sync_events_to_icloud(FakeCalendarService(), "cal-guid", CAL_TZ, [])
+
+        assert (outcome.added, outcome.deleted, outcome.already_gone) == (0, 0, 0)
+
     def test_empty_list_is_a_noop(self):
         service = FakeCalendarService()
 
