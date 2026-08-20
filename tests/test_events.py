@@ -552,6 +552,99 @@ class TestRecurrenceExpansion:
         assert utc(2026, 8, 4, 16) in starts
         assert utc(2026, 8, 4, 12) not in starts
 
+    def test_dtstart_is_kept_when_it_does_not_match_the_rule(self):
+        """RFC 5545 makes DTSTART an occurrence; dateutil omits it when unmatched.
+
+        A Wednesday anchor on a BYDAY=TU rule is a real meeting that synced before
+        expansion existed, so losing it would be a regression, not a refinement.
+        """
+        events = parse(
+            [{"start": "20260805T120000Z", "end": "20260805T130000Z", "rrule": "FREQ=WEEKLY;BYDAY=TU"}],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        assert utc(2026, 8, 5, 12) in [event.start for event in events]
+
+    def test_a_cancelled_anchor_is_not_readded(self):
+        """Re-adding DTSTART must not override EXDATE."""
+        events = parse(
+            [
+                {
+                    "start": "20260805T120000Z",
+                    "end": "20260805T130000Z",
+                    "rrule": "FREQ=WEEKLY;BYDAY=TU",
+                    "exdate": "20260805T120000Z",
+                }
+            ],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        assert utc(2026, 8, 5, 12) not in [event.start for event in events]
+
+    def test_mixed_awareness_bounds_do_not_sink_the_run(self, quiet_terminal):
+        """An aware DTSTART with a floating DTEND used to raise out of the whole merge."""
+        calendar = Calendar.from_ical(
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:mixed@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART:20260804T120000Z\r\nDTEND:20260804T130000\r\n"
+            b"RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31, 23, 59))
+
+        assert [event.start for event in events] == [utc(2026, 8, 4, 12)]
+
+    def test_a_this_and_future_split_keeps_its_own_first_occurrence(self):
+        """A VEVENT with both RECURRENCE-ID and RRULE is a master, not an override.
+
+        Outlook writes these when "change this and all following" is used. Treating
+        it as an override made it suppress its own DTSTART.
+        """
+        calendar = Calendar.from_ical(
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:split@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART:20260811T140000Z\r\nDTEND:20260811T150000Z\r\n"
+            b"RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T140000Z\r\n"
+            b"RRULE:FREQ=WEEKLY;BYDAY=TU\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31, 23, 59))
+
+        assert utc(2026, 8, 11, 14) in [event.start for event in events]
+
+    def test_rdate_adds_a_one_off_occurrence(self):
+        calendar = Calendar.from_ical(
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:rdate@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART:20260804T120000Z\r\nDTEND:20260804T130000Z\r\n"
+            b"RRULE:FREQ=WEEKLY;COUNT=2\r\nRDATE:20260820T120000Z\r\n"
+            b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31, 23, 59))
+
+        assert utc(2026, 8, 20, 12) in [event.start for event in events]
+
+    def test_an_all_day_rdate_is_ignored(self):
+        calendar = Calendar.from_ical(
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\n"
+            b"BEGIN:VEVENT\r\nUID:rdate2@test\r\nDTSTAMP:20260812T000000Z\r\n"
+            b"DTSTART:20260804T120000Z\r\nDTEND:20260804T130000Z\r\n"
+            b"RRULE:FREQ=WEEKLY;COUNT=2\r\nRDATE;VALUE=DATE:20260820\r\n"
+            b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        events = merge._parse_source_events(calendar, [], utc(2026, 8, 1), utc(2026, 8, 31, 23, 59))
+
+        assert len(events) == 2
+
+    def test_no_rdate_is_not_an_error(self):
+        event = vevent()
+
+        assert merge._additional_occurrences(event, datetime(2026, 8, 4, 12, tzinfo=UTC)) == []
+
     def test_expanded_occurrences_are_deduplicated(self):
         """Two series landing on the same slot collapse, as any other pair would."""
         events = parse(

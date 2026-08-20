@@ -55,6 +55,7 @@ ICS_FIELD_PRODID = "PRODID"
 ICS_FIELD_MS_BUSY_STATUS = "X-MICROSOFT-CDO-BUSYSTATUS"
 ICS_FIELD_RRULE = "RRULE"
 ICS_FIELD_EXDATE = "EXDATE"
+ICS_FIELD_RDATE = "RDATE"
 ICS_FIELD_RECURRENCE_ID = "RECURRENCE-ID"
 ICS_FIELD_UID = "UID"
 
@@ -902,6 +903,11 @@ def _collect_recurrence_overrides(ics_calendar: Calendar) -> set[tuple[str, date
         recurrence_id = get_from_list(file_event, ICS_FIELD_RECURRENCE_ID)
         if recurrence_id is None:
             continue
+        # A VEVENT carrying both properties is a THISANDFUTURE split: a master in its
+        # own right, not an override of one. Registering it would make it suppress its
+        # own first occurrence, losing that meeting entirely.
+        if get_from_list(file_event, ICS_FIELD_RRULE) is not None:
+            continue
         moment = _normalise_ics_datetime(recurrence_id.dt)
         uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
         # Without a UID the override cannot be attributed, and keying it on the empty
@@ -930,6 +936,24 @@ def _cancelled_occurrences(file_event) -> set[datetime]:
     return cancelled
 
 
+def _additional_occurrences(file_event, anchor: datetime) -> list[datetime]:
+    """Extra dates attached to a series with RDATE, in the anchor's own frame.
+
+    Returned unnormalised because the caller filters against window bounds it has
+    already converted into that frame; normalisation happens with the rest.
+    """
+    raw = get_from_list(file_event, ICS_FIELD_RDATE)
+    if raw is None:
+        return []
+    extras: list[datetime] = []
+    for entry in raw if isinstance(raw, list) else [raw]:
+        for stamp in getattr(entry, "dts", []):
+            moment = stamp.dt
+            if isinstance(moment, datetime) and bool(moment.tzinfo) == bool(anchor.tzinfo):
+                extras.append(moment)
+    return extras
+
+
 def _expand_recurrence(
     file_event, uid: str, overrides: set[tuple[str, datetime]], window_start: datetime, window_end: datetime
 ) -> list[tuple[datetime, datetime]] | None:
@@ -956,11 +980,21 @@ def _expand_recurrence(
         return None
 
     try:
+        # Inside the try: a VEVENT may pair an aware DTSTART with a floating DTEND, and
+        # subtracting those raises. Left outside, that escaped every guard here and
+        # aborted the whole run -- the opposite of what this fallback exists for.
+        duration = finish - anchor
         rule = rrulestr(rule_field.to_ical().decode(), dtstart=anchor)
         # Expand in the series' own frame; comparing across offsets needs matching awareness.
         lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)
         upper = window_end.astimezone(anchor.tzinfo) if anchor.tzinfo else window_end.replace(tzinfo=None)
-        occurrences = rule.between(lower, upper, inc=True)
+        occurrences = list(rule.between(lower, upper, inc=True))
+        # DTSTART is the first occurrence even when it does not match the pattern --
+        # dateutil deliberately omits it there, which silently drops a real meeting.
+        if lower <= anchor <= upper and anchor not in occurrences:
+            occurrences.append(anchor)
+        # RDATE attaches extra one-off dates to a series.
+        occurrences.extend(moment for moment in _additional_occurrences(file_event, anchor) if lower <= moment <= upper)
     except Exception:
         # Deliberately broad: this parses third-party feed data, and one unreadable
         # rule among hundreds of events must not sink the whole sync. exc_info keeps
@@ -968,7 +1002,6 @@ def _expand_recurrence(
         logger.warning("could not expand a recurrence rule; contributing its original occurrence only", exc_info=True)
         return None
 
-    duration = finish - anchor
     cancelled = _cancelled_occurrences(file_event)
     slots: list[tuple[datetime, datetime]] = []
     for occurrence in occurrences:
