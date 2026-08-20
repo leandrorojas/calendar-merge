@@ -49,10 +49,10 @@ class TestCondense:
         condensed = merge._condense("x" * 500)
 
         assert len(condensed) == merge.ERROR_PART_MAX_CHARS
-        assert condensed.endswith("\u2026")
+        assert condensed.endswith("…")
 
     def test_honours_an_explicit_limit(self):
-        assert merge._condense("abcdefghij", limit=5) == "abcd\u2026"
+        assert merge._condense("abcdefghij", limit=5) == "abcd…"
 
     def test_empty_text_stays_empty(self):
         assert merge._condense("") == ""

@@ -176,7 +176,7 @@ def _condense(text: str, limit: int = ERROR_PART_MAX_CHARS) -> str:
     collapsed = " ".join(text.split())
     if len(collapsed) <= limit:
         return collapsed
-    return collapsed[: limit - 1].rstrip() + "\u2026"
+    return collapsed[: limit - 1].rstrip() + "…"
 
 
 def _describe_error(err: BaseException) -> str:

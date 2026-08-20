@@ -122,6 +122,13 @@ RuntimeError -- `raise RuntimeError("Unable to load events from iCloud") from er
 bare message says where the merge stopped and never why. `_describe_error` walks `__cause__`
 up to `ERROR_CAUSE_DEPTH` and renders `wrapper (Type: message <- Type: message)`.
 
+Each part goes through `_condense`, which flattens whitespace to one line and caps the length,
+bounding the whole message at roughly `(ERROR_CAUSE_DEPTH + 1) * ERROR_PART_MAX_CHARS`. That is
+not cosmetic: `PyiCloudAPIResponseException` appends the entire HTTP response body to its own
+message, so an Apple error page arrives verbatim. Telegram rejects anything past 4096
+characters and `send_telegram_message` swallows the failure, so an unbounded alert is not a
+long alert — it is **no alert at all**, exactly when the upstream error is worst.
+
 Only `__cause__` is followed. `from err` is explicit and always meaningful; `__context__` is
 whatever happened to be in flight and would fill a phone-sized alert with noise.
 

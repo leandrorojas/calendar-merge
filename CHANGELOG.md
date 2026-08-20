@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [v0.1.11] — 2026-08-19
+
+### Fixed
+
+- Failure alerts are now bounded and single-line. `PyiCloudAPIResponseException` appends the
+  entire HTTP response body to its message, so a 500 returning an Apple error page would have
+  put multiple KB of markup into the Telegram message. Telegram rejects anything past 4096
+  characters and `send_telegram_message` is best-effort, so the alert would not have arrived
+  at all — the worse the upstream error, the more certainly nothing is heard. The 500s on
+  2026-08-18 had empty bodies, which is the only reason v0.1.10 did not show this.
+
+  `_condense` collapses whitespace and caps each part. A cause with no message now renders as
+  `wrapper (KeyError)` instead of leaving a dangling colon.
+
 ## [v0.1.10] — 2026-08-19
 
 ### Fixed
