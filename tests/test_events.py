@@ -474,8 +474,12 @@ class TestRecurrenceExpansion:
 
         assert all(str(event.start.weekday()) not in ("5", "6") for event in events)
 
-    def test_a_malformed_rule_is_survivable(self, quiet_terminal):
-        """One broken series must not sink the whole feed."""
+    def test_a_malformed_rule_still_contributes_its_original_occurrence(self, quiet_terminal):
+        """An unreadable rule costs its repeats, not the meeting itself.
+
+        Dropping the master would silently remove a real event from the merged
+        calendar, which is the failure this whole feature exists to fix.
+        """
         events = parse(
             [
                 {"start": "20260804T120000Z", "end": "20260804T130000Z", "rrule": "FREQ=NONSENSE"},
@@ -485,6 +489,19 @@ class TestRecurrenceExpansion:
             end=utc(2026, 8, 31, 23, 59),
         )
 
+        assert [event.start for event in events] == [utc(2026, 8, 4, 12), utc(2026, 8, 5, 12)]
+
+    def test_a_malformed_rule_does_not_sink_the_feed(self, quiet_terminal):
+        events = parse(
+            [
+                {"start": "20250101T120000Z", "end": "20250101T130000Z", "rrule": "FREQ=NONSENSE"},
+                {"start": "20260805T120000Z", "end": "20260805T130000Z"},
+            ],
+            start=utc(2026, 8, 1),
+            end=utc(2026, 8, 31, 23, 59),
+        )
+
+        # The broken master is outside the window, so only the ordinary event lands.
         assert [event.start for event in events] == [utc(2026, 8, 5, 12)]
 
     def test_expanded_occurrences_are_deduplicated(self):
@@ -523,7 +540,7 @@ class TestRecurrenceHelpers:
         )
         event = next(iter(calendar.walk("VEVENT")))
 
-        assert merge._expand_recurrence(event, "nodtend@test", set(), utc(2026, 8, 1), utc(2026, 8, 31)) == []
+        assert merge._expand_recurrence(event, "nodtend@test", set(), utc(2026, 8, 1), utc(2026, 8, 31)) is None
 
     def test_an_all_day_series_is_not_expanded(self):
         """All-day VEVENTs carry a date, and this module syncs only timed events."""
@@ -535,7 +552,7 @@ class TestRecurrenceHelpers:
         )
         event = next(iter(calendar.walk("VEVENT")))
 
-        assert merge._expand_recurrence(event, "allday@test", set(), utc(2026, 8, 1), utc(2026, 8, 31)) == []
+        assert merge._expand_recurrence(event, "allday@test", set(), utc(2026, 8, 1), utc(2026, 8, 31)) is None
 
     def test_an_all_day_exdate_is_ignored(self):
         calendar = Calendar.from_ical(

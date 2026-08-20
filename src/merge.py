@@ -929,23 +929,28 @@ def _cancelled_occurrences(file_event) -> set[datetime]:
 
 def _expand_recurrence(
     file_event, uid: str, overrides: set[tuple[str, datetime]], window_start: datetime, window_end: datetime
-) -> list[tuple[datetime, datetime]]:
+) -> list[tuple[datetime, datetime]] | None:
     """The (start, end) slots a repeating VEVENT actually places inside the window.
 
     `walk` yields only the series master, whose DTSTART is the *first* occurrence --
     Outlook anchors that at the date the series was created, so a long-running weekly
     meeting has a DTSTART far outside any forward-looking window and contributes
     nothing at all without this.
+
+    Returns None when the rule cannot be read at all, which the caller distinguishes
+    from an empty list: an empty list means the series genuinely places nothing in
+    the window, while None falls back to treating the master as a plain event so a
+    malformed rule costs its occurrences rather than the meeting itself.
     """
     rule_field = get_from_list(file_event, ICS_FIELD_RRULE)
     start_field = get_from_list(file_event, ICS_FIELD_DATE_START)
     end_field = get_from_list(file_event, ICS_FIELD_DATE_END)
     if rule_field is None or start_field is None or end_field is None:
-        return []
+        return None
 
     anchor, finish = start_field.dt, end_field.dt
     if not isinstance(anchor, datetime) or not isinstance(finish, datetime):
-        return []
+        return None
 
     try:
         rule = rrulestr(rule_field.to_ical().decode(), dtstart=anchor)
@@ -955,7 +960,7 @@ def _expand_recurrence(
         occurrences = rule.between(lower, upper, inc=True)
     except Exception:  # a malformed rule must not sink the whole feed
         logger.warning("could not expand a recurrence rule; contributing its original occurrence only")
-        return []
+        return None
 
     duration = finish - anchor
     cancelled = _cancelled_occurrences(file_event)
@@ -984,13 +989,17 @@ def _parse_source_events(
 
         if get_from_list(file_event, ICS_FIELD_RRULE) is not None:
             uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
-            for start, end in _expand_recurrence(file_event, uid, overrides, utc_today_bod, utc_cut_off_date):
-                if str(start.weekday()) in skip_days:
-                    continue
-                events.append(MergeEvent(None, start, end, None, None))
-            # The master itself is only a template; its own DTSTART is the first
-            # occurrence and is already covered by the expansion when in range.
-            continue
+            occurrences = _expand_recurrence(file_event, uid, overrides, utc_today_bod, utc_cut_off_date)
+            if occurrences is not None:
+                for start, end in occurrences:
+                    if str(start.weekday()) in skip_days:
+                        continue
+                    events.append(MergeEvent(None, start, end, None, None))
+                # The master is only a template; its own DTSTART is the first
+                # occurrence and the expansion already covers it when in range.
+                continue
+            # An unreadable rule falls through, so the meeting still contributes its
+            # original occurrence instead of vanishing from the merged calendar.
 
         start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
         if start_datetime is None:
