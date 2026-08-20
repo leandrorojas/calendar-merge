@@ -35,6 +35,29 @@ class TestStripAnsi:
         assert merge._strip_ansi("") == ""
 
 
+class TestCondense:
+    """Alerts must survive whatever pyicloud puts in an exception message."""
+
+    def test_leaves_short_text_alone(self):
+        assert merge._condense("already short") == "already short"
+
+    def test_collapses_newlines_and_runs_of_whitespace(self):
+        # Apple error pages are multi-line; a Telegram alert must stay one line.
+        assert merge._condense("line one\n\tline   two\n") == "line one line two"
+
+    def test_truncates_to_the_limit_with_an_ellipsis(self):
+        condensed = merge._condense("x" * 500)
+
+        assert len(condensed) == merge.ERROR_PART_MAX_CHARS
+        assert condensed.endswith("…")
+
+    def test_honours_an_explicit_limit(self):
+        assert merge._condense("abcdefghij", limit=5) == "abcd…"
+
+    def test_empty_text_stays_empty(self):
+        assert merge._condense("") == ""
+
+
 class TestDescribeError:
     """`_describe_error` is what makes a Telegram alert diagnosable."""
 
@@ -107,6 +130,40 @@ class TestDescribeError:
         err.__context__ = ValueError("incidental")
 
         assert merge._describe_error(err) == "wrapper"
+
+    def test_omits_the_colon_when_the_cause_has_no_message(self):
+        err = RuntimeError("wrapper")
+        err.__cause__ = KeyError()
+
+        assert merge._describe_error(err) == "wrapper (KeyError)"
+
+    def test_bounds_an_alert_carrying_a_whole_error_page(self):
+        """pyicloud embeds response.text, so a 500 can arrive with an HTML page.
+
+        Telegram rejects anything past 4096 characters and the send is
+        best-effort, so an unbounded alert would simply never arrive.
+        """
+        page = "<html>\n" + ("x" * 6000) + "\n</html>"
+        err = RuntimeError("Unable to load events from iCloud")
+        err.__cause__ = Exception(f"Authentication required for Account. (500): {page}")
+
+        described = merge._describe_error(err)
+
+        assert len(described) < 1000
+        assert "\n" not in described
+        assert described.startswith("Unable to load events from iCloud (Exception: ")
+
+    def test_stays_within_the_documented_bound(self):
+        chain = [Exception("y" * 5000) for _ in range(4)]
+        for outer, inner in pairwise(chain):
+            outer.__cause__ = inner
+        err = RuntimeError("z" * 5000)
+        err.__cause__ = chain[0]
+
+        described = merge._describe_error(err)
+
+        ceiling = (merge.ERROR_CAUSE_DEPTH + 1) * merge.ERROR_PART_MAX_CHARS
+        assert len(described) <= ceiling + 100  # separators and type names
 
 
 class TestConfigureLogging:
