@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Fixed
+
+- A sync that fails partway now reports what it managed before the failure propagates. The
+  summary added in v0.1.15 was emitted after `_sync_events_to_icloud` returned, so any error
+  skipped it — and a mid-sync failure is precisely when the report matters, because the calendar
+  has been mutated and nothing says by how much. Concretely: 16 of 17 adds succeed, the 17th
+  returns a 500, and the log recorded only the failure.
+
+  Moved into a `finally` inside the sync, which already emits the per-event "already gone" line.
+  This also makes the tally's counting order observable, so a failed add is now provably not
+  counted as a change.
+
 ## [v0.1.15] — 2026-08-20
 
 ### Added

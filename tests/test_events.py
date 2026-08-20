@@ -1053,6 +1053,12 @@ class TestParseSourceEvents:
 CAL_TZ = ZoneInfo(BA_TZ)
 
 
+class ServerError(Exception):
+    """A non-404 API failure: fatal, unlike an already-deleted event."""
+
+    code = 500
+
+
 class TestSyncEventsToIcloud:
     def test_adds_events_marked_add(self):
         service = FakeCalendarService()
@@ -1307,9 +1313,7 @@ class TestSyncEventsToIcloud:
         class PartialFailure(FakeCalendarService):
             def add_event(self, event):
                 if len(self.added) >= 2:
-                    err = Exception("Server Error")
-                    err.code = 500
-                    raise err
+                    raise ServerError("Server Error")
                 return super().add_event(event)
 
         service = PartialFailure()
@@ -1337,9 +1341,7 @@ class TestSyncEventsToIcloud:
 
         class AlwaysFails(FakeCalendarService):
             def add_event(self, event):
-                err = Exception("Server Error")
-                err.code = 500
-                raise err
+                raise ServerError("Server Error")
 
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
 
@@ -1351,9 +1353,7 @@ class TestSyncEventsToIcloud:
     def test_a_failed_delete_is_not_counted(self, quiet_terminal):
         class AlwaysFails(FakeCalendarService):
             def remove_event(self, event):
-                err = Exception("Server Error")
-                err.code = 500
-                raise err
+                raise ServerError("Server Error")
 
         events = [
             merge_event(
