@@ -160,10 +160,11 @@ Two things worth knowing about Outlook feeds:
 - **Timezones.** Outlook uses Windows timezone names (`Argentina Standard Time`) rather than
   IANA ones. These are mapped automatically, so no extra configuration is needed. The `tz`
   value above is only used when writing events *into* iCloud.
-- **Recurring events are not expanded yet.** Only the first occurrence of a repeating meeting
-  is considered, and because Outlook anchors a series at its original start date, a long-running
-  weekly meeting may contribute no events at all. One-off meetings sync correctly. See
-  [`CHANGELOG.md`](CHANGELOG.md) for status.
+- **Recurring events are expanded.** A repeating meeting contributes every occurrence that falls
+  in the window, honouring `EXDATE` cancellations, `RECURRENCE-ID` overrides for moved instances,
+  and `RDATE` extras. This matters most for Outlook, which anchors a series at its original start
+  date — before expansion, a long-running weekly meeting contributed nothing at all. Google feeds
+  are unaffected either way, since Google pre-expands each occurrence server-side.
 
 ## Usage
 
@@ -241,8 +242,7 @@ v0.1.12, but duplicate creation is not similarly guarded — the schedule is the
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
 - The script downloads temporary `.ics` files under the system temp directory while processing.
 - If you remove a calendar URL or `source-calendar-N` block, clean up the numbering so the indexes stay consecutive starting from `0`.
-- **Recurring events are not expanded.** Only the original occurrence of a repeating meeting is
-  considered, so a long-running weekly series may contribute nothing to the window. See
-  [BACKLOG.md](BACKLOG.md) for this and other known gaps.
+- Known gaps that are deliberately unfixed are recorded in [BACKLOG.md](BACKLOG.md), each with
+  its evidence and what a fix would take.
 
 Happy merging!

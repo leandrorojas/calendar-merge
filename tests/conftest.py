@@ -285,6 +285,10 @@ def ics_bytes(events, prodid=PRODID_UNKNOWN):
     optional `transp` ("OPAQUE" / "TRANSPARENT") and `busy_status` (Outlook's
     X-MICROSOFT-CDO-BUSYSTATUS: BUSY / TENTATIVE / OOF / FREE).
 
+    For recurrence: `rrule` turns the entry into a series master, `exdate` (a stamp
+    or list of them) cancels occurrences, and `recurrence_id` marks the entry as a
+    modified instance replacing one slot of the series with the same `uid`.
+
     `prodid` decides which dialect merge.py applies, so pass PRODID_GOOGLE to
     reproduce a Google feed, where an explicit TRANSP marks self-blocked time.
     """
@@ -292,12 +296,22 @@ def ics_bytes(events, prodid=PRODID_UNKNOWN):
     for index, event in enumerate(events):
         lines += [
             "BEGIN:VEVENT",
-            f"UID:event-{index}@test",
+            f"UID:{event.get('uid', f'event-{index}@test')}",
             "DTSTAMP:20260812T000000Z",
             f"DTSTART:{event['start']}",
             f"DTEND:{event['end']}",
             f"SUMMARY:{event.get('summary', f'Event {index}')}",
         ]
+        # Recurrence: rrule makes the entry a series master, recurrence_id makes it
+        # a modified instance replacing one slot of the series sharing its uid.
+        if event.get("rrule"):
+            lines.append(f"RRULE:{event['rrule']}")
+        if event.get("exdate"):
+            raw = event["exdate"]
+            for stamp in raw if isinstance(raw, list) else [raw]:
+                lines.append(f"EXDATE:{stamp}")
+        if event.get("recurrence_id"):
+            lines.append(f"RECURRENCE-ID:{event['recurrence_id']}")
         if event.get("transp"):
             lines.append(f"TRANSP:{event['transp']}")
         if event.get("busy_status"):

@@ -8,6 +8,10 @@ dependencies = [
     # only worked by accident and must be declared here.
     "click>=8.4.2",
     "dotenv>=0.9.9",
+    # Imported directly by merge.py to expand RRULEs. It arrives transitively via
+    # icalendar today, which is exactly how click arrived via pyicloud until it did
+    # not -- so it is declared rather than relied upon.
+    "python-dateutil>=2.9",
     "icalendar>=7.2.2",
     "pyfangs",
     "pyicloud==2.6.5",

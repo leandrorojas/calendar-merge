@@ -11,25 +11,17 @@ program *does*, how it is *operated*, or how it is *verified*.
 
 ## Functional
 
-### Recurring events are not expanded
+### A pathological recurrence rule can stall a run
 
-`_parse_source_events` (`src/merge.py:820`) iterates `ics_calendar.walk(ICS_TAG_VEVENT)`,
-which yields the **series master**, not its occurrences. A repeating meeting therefore
-contributes at most its original `DTSTART`.
+`_expand_recurrence` calls `rule.between()`, which iterates from `DTSTART` forward with no cap.
+A high-frequency rule anchored far in the past therefore costs time proportional to the gap, not
+to the window: measured at **1.7s for a single `FREQ=MINUTELY` event anchored 2023-01-01** against
+a one-hour window. Daily or coarser rules are negligible, and the three live feeds contain none
+finer than weekly.
 
-Outlook anchors a series at the date it was first created, so a weekly meeting set up
-last year has a `DTSTART` far outside any forward-looking window and contributes
-**nothing at all**.
-
-**Measured impact:** roughly 6 of ~18 weekly occurrences reach iCloud on the Outlook feed.
-This is the largest known functional gap in the product.
-
-**A fix needs:** RRULE expansion, plus `EXDATE` and `RECURRENCE-ID` override handling.
-Skipping the override handling would resurrect cancelled and moved occurrences, which is
-worse than the current under-reporting — the current failure omits busy time, that one
-would invent it.
-
-Already described in `CLAUDE.md` under *Recurring events are not expanded*.
+**Deferred.** Any cap risks dropping legitimate occurrences, and the failure mode is a slow run
+rather than a wrong one — the merge still produces correct output. Worth revisiting only if a
+feed ever ships sub-hourly recurrence.
 
 ### The date window follows the host timezone
 

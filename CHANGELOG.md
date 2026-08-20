@@ -4,6 +4,31 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Added
+
+- Recurring events from source feeds are expanded. `walk(VEVENT)` yields only the series
+  master, whose `DTSTART` is the first occurrence — and Outlook anchors that at the date the
+  series was created, so a long-running weekly meeting sat outside any forward-looking window
+  and contributed nothing. Measured against the live Outlook feed on 2026-08-20: **2 events
+  became 19** for the same 12-day window. The Google feeds are unchanged at 14 and 1, because
+  Google pre-expands server-side.
+
+  The expansion honours `EXDATE` and `RECURRENCE-ID`, which is what makes it safe rather than
+  merely fuller — without them it would create events for cancelled meetings and place moved
+  ones twice. An unreadable rule falls back to the master's own occurrence rather than
+  dropping the meeting.
+
+  `RDATE` extras are included, a `DTSTART` that does not match its own rule is kept (RFC 5545
+  makes it an occurrence; dateutil omits it, which would have lost meetings that synced before
+  expansion existed), and a VEVENT carrying both `RECURRENCE-ID` and `RRULE` is treated as the
+  `THISANDFUTURE` split it is rather than as an override of itself.
+
+- `python-dateutil` is declared as a direct dependency. `merge.py` imports it to expand rules
+  and it arrived transitively via `icalendar` — the same accident that broke `import click`
+  when pyicloud dropped it.
+
 ## [v0.1.13] — 2026-08-20
 
 ### Added
