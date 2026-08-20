@@ -27,6 +27,13 @@ schedule, so newly published queries reach code that has not changed. It needs n
 Python is interpreted, and `security-events: write` is scoped to that job alone. `security-extended`
 is enabled; the `quality` suite is deliberately left off to avoid duplicating Ruff and SonarCloud.
 
+Dependabot runs both kinds of update. **Version** updates come from `.github/dependabot.yml`
+(the `uv` and `github-actions` ecosystems, with a `registries` entry so the private `pyfangs`
+repo can be reached). **Security** updates and alerts are repository settings rather than file
+configuration, enabled 2026-08-20 — note the API reports alerts as *disabled* by returning
+`404` from `GET /repos/{owner}/{repo}/vulnerability-alerts` and `204` when enabled, which reads
+like a permissions failure and is not one.
+
 CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).

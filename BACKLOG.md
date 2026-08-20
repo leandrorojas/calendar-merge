@@ -49,15 +49,6 @@ and `_end_of_day`, which is only worth doing if the merge ever runs somewhere el
 
 ## Operational
 
-### Dependabot security alerts are disabled
-
-Dependabot **version** updates work (repaired 2026-08-18, PR #74). Dependabot
-**security** alerts are off, so no CVE notification arrives for a vulnerable dependency
-on a public repository.
-
-**Action:** repository Settings → Code security → enable *Dependabot alerts*. One
-toggle, requires repo admin. Cannot be done from the API with the current token.
-
 ### One source calendar's failure aborts every calendar after it
 
 `main()`'s source-calendar loop catches only `YamlError`, which it uses as the "no more
