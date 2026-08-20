@@ -1303,6 +1303,38 @@ class TestSyncEventsToIcloud:
 
         assert (outcome.deleted, outcome.already_gone) == (0, 1)
 
+    def test_the_summary_comes_after_the_step_is_closed(self, quiet_terminal):
+        """Ordering is load-bearing, not cosmetic.
+
+        The caller opens an unterminated "synchronizing..." line. Anything printed
+        before `print_done()` closes it is glued onto that line, leaving "done!"
+        orphaned on the next -- on every source, on every run.
+        """
+        service = FakeCalendarService()
+        events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
+
+        merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
+
+        summary = next(index for index, line in enumerate(quiet_terminal) if "1 added" in line)
+        closed = next(index for index, line in enumerate(quiet_terminal) if line == "<done>")
+        assert closed < summary
+
+    def test_a_failure_closes_the_step_before_the_summary(self, quiet_terminal):
+        """The failure path closes the line with print_failed instead."""
+        events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
+
+        class AlwaysFails(FakeCalendarService):
+            def add_event(self, event):
+                raise ServerError("Server Error")
+
+        with pytest.raises(RuntimeError):
+            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+
+        summary = next(index for index, line in enumerate(quiet_terminal) if "0 added" in line)
+        closed = next(index for index, line in enumerate(quiet_terminal) if line == "<failed>")
+        assert closed < summary
+        assert "<done>" not in quiet_terminal
+
     def test_a_partial_sync_still_reports_what_it_managed(self, quiet_terminal):
         """The case the report matters most for, and the one it used to skip.
 

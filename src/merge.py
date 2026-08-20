@@ -1120,10 +1120,19 @@ def _sync_events_to_icloud(
     then fails still says what it managed to do. Without that, the case where the
     log matters most -- a partial sync, where the calendar alone cannot tell you
     whether anything ran -- is the one case it stayed silent about.
+
+    Owning `term.print_done()` comes with that: the caller opens an unterminated
+    "synchronizing..." line, and anything printed before it is closed lands glued to
+    it. Since the failure path already closes the line via `term.print_failed()`,
+    both ends now belong here.
     """
     outcome = SyncOutcome()
     try:
         _apply_event_actions(calendar_service, calendar_guid, calendar_tz, merge_events, outcome)
+        # Completes the caller's pending "synchronizing..." line before the summary is
+        # written, or the summary is appended to that line and "done!" is orphaned.
+        # The failure path is already closed by term.print_failed() at the raise site.
+        term.print_done()
     finally:
         summary = f"{source_tag}: {outcome.added} added, {outcome.deleted} deleted"
         if outcome.already_gone:
@@ -1383,7 +1392,6 @@ def _process_source_calendar(
     # this says which calendar it happened to. Emitted inside the call so it survives
     # a mid-sync failure.
     _sync_events_to_icloud(calendar_service, calendar_guid, calendar_tz, merge_events, source_tag)
-    term.print_done()
 
 
 # endregion
