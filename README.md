@@ -174,6 +174,29 @@ Run the merger after updating your `.env` and `config.yaml`:
 uv run calendar-merge
 ```
 
+### Two ways to start it
+
+Both work, and they differ in ways worth knowing before choosing one for a scheduler.
+
+```bash
+uv run calendar-merge          # the installed console script
+.venv/bin/python src/merge.py  # the module, executed directly
+```
+
+The **console script** is the packaged entry point. It is a generated shim whose body is
+`from merge import main`, so it depends on the wheel placing `merge.py` at its root — which is
+why CI checks that layout. `uv run` also syncs the environment before starting, so a run picks
+up dependency changes on its own; add `--no-sync` to suppress that.
+
+Running the **module directly** skips all of it. Python puts the script's own directory on
+`sys.path`, so no install, entry point, or packaging is involved. Nothing is resolved and
+nothing is downloaded, which makes it the more predictable choice for cron: a scheduled run
+cannot pause to install anything, and cannot be affected by a half-applied dependency change.
+
+Use whichever suits you — the console script for ad-hoc runs, the direct form when a scheduled
+run should do exactly the same thing every time. If you schedule the console script instead,
+prefer `uv run --no-sync calendar-merge` so the schedule stays deterministic.
+
 Add the optional flags when you want Telegram updates:
 
 ```bash

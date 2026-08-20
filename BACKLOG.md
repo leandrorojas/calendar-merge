@@ -94,20 +94,6 @@ on every bump and must be caught by inspection.
 
 ## Verification
 
-### CI does not check the packaging layout
-
-The test suite imports `merge` through pytest's `pythonpath = ["src"]`, which resolves
-the module from the **source tree** and never from the built artifact. 336 tests at 100%
-coverage are therefore blind to whether the shipped program can start at all.
-
-This is not hypothetical: it let a broken wheel ship from at least v0.1.8 until v0.1.9,
-where `from merge import main` raised `ModuleNotFoundError` on every installed copy
-(fixed in PR #82).
-
-**A fix would** add a CI step that builds the wheel and asserts `merge.py` sits at its
-root — a few seconds of build time to guard a failure mode the entire test suite cannot
-observe.
-
 ## Code health
 
 ### `_reconcile_events` exceeds the cognitive-complexity limit

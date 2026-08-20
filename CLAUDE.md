@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Run Commands
 
+The console script (`uv run calendar-merge`) and direct execution
+(`.venv/bin/python src/merge.py`) are both supported and take different paths: the former
+imports `merge` as an installed top-level module, the latter runs the file as `__main__` with
+its own directory on `sys.path`. A packaging fault therefore breaks the first and not the
+second, which is why CI asserts the wheel layout — see `README.md` for when to prefer each.
+
 ```bash
 uv sync                          # Install dependencies
 uv sync --extra dev              # Install dependencies + dev tooling (mypy, pytest)

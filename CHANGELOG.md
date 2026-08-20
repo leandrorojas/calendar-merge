@@ -4,6 +4,21 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Added
+
+- CI asserts the wheel layout. The test suite imports `merge` through pytest's
+  `pythonpath = ["src"]`, which resolves it from the source tree and never from the built
+  artifact, so full coverage says nothing about whether an installed copy can start — a wheel
+  shipping the module as `src/merge.py` went undetected for two releases. The check derives the
+  expected module from `entry_points.txt` rather than hardcoding it, so renaming the entry point
+  without moving the module is caught as readily as the reverse. It needs no private dependency,
+  since building only runs the hatchling backend, and so lives in the lint job.
+- `README.md` documents both ways to start the program and when each is preferable. The console
+  script depends on packaging and syncs the environment first; running the module directly
+  involves neither, which makes it the more predictable choice for a scheduled run.
+
 ## [v0.1.15] — 2026-08-20
 
 ### Added
