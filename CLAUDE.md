@@ -44,6 +44,13 @@ CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull r
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
 
+`tools/assert_wheel_layout.py` is the CI packaging check, covered by
+`tests/test_wheel_layout.py`. It is tested for the same reason it exists: its value is entirely
+in failing correctly, and its worst failure mode is passing while verifying nothing — an empty
+`console_scripts` section would leave its loop with nothing to do. `tools/` is linted and
+typechecked alongside `src/` and `tests/`, but is outside the coverage gate, which measures
+`src/` only.
+
 ## Tests
 
 `src/merge.py` is at **100% statement and branch coverage**, enforced by `fail_under = 100` in
