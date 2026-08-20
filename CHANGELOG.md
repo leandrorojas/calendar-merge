@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Added
+
+- `README.md` documents the scheduling constraint: two invocations must never share a minute.
+  Concurrent runs act on the same stale iCloud snapshot, which is what produced the `404` on
+  2026-08-20 and can also create duplicate events. Written down because the collision came
+  from two cron lines that look independent — `0 8 * * 1-5` and `*/15 8-17 * * 1-5`.
+
 ## [v0.1.12] — 2026-08-20
 
 ### Fixed
