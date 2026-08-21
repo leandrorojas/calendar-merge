@@ -44,6 +44,15 @@ CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull r
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
 
+`uv.lock` is the single source of truth for the Ruff version. The lint job reads it through
+`tools/ruff_version.py` instead of repeating it, because Dependabot updates the lockfile and
+`pyproject.toml` but cannot see a string literal in a workflow — so the 0.15.10 to 0.16.3 bump
+left CI linting with the previous release while local runs used the new one, which is the exact
+drift the pin was introduced to prevent. `--check` additionally asserts the `rev` in
+`.pre-commit-config.yaml` agrees, since a pre-commit `rev` cannot be derived at run time and so
+has to be verified instead. The script uses only the standard library and runs under
+`uv run --no-project`, keeping the lint job free of the private dependency and its deploy key.
+
 `tools/assert_wheel_layout.py` is the CI packaging check, covered by
 `tests/test_wheel_layout.py`. It is tested for the same reason it exists: its value is entirely
 in failing correctly, and its worst failure mode is passing while verifying nothing — an empty

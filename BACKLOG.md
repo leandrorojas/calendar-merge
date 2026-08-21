@@ -72,28 +72,6 @@ measured in seconds would have failed anyway.
 **Deferred** until it recurs. One incident is not enough to justify persistent state, and the
 alerts were at least accurate -- the sync really did not happen.
 
-### The ruff pin drifts on every ruff bump
-
-The ruff version is declared in three places:
-
-| Location | Form | Dependabot sees it |
-|---|---|---|
-| `pyproject.toml` / `uv.lock` | dependency | ✅ |
-| `.github/workflows/ci.yml` (×3) | string literal | ❌ |
-| `.pre-commit-config.yaml` | `rev:` | ❌ |
-
-The `uv` ecosystem updates only the first, so every ruff bump leaves CI linting with the
-previous version — exactly the drift the exact pin exists to prevent. It happened on the
-0.15.10 → 0.16.3 bump and was corrected by hand in PR #80.
-
-**A fix would** have the lint job derive the version from `uv.lock` rather than repeating
-it, or add a check that fails when the three disagree. Until then this recurs silently
-on every bump and must be caught by inspection.
-
----
-
-## Verification
-
 ## Code health
 
 ### `_reconcile_events` exceeds the cognitive-complexity limit

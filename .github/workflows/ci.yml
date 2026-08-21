@@ -32,19 +32,34 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      # Exact pin matches .pre-commit-config.yaml so CI and local hooks never
-      # disagree on formatting. --no-build installs from wheels only, so no
-      # sdist setup script is ever executed.
+      # uv.lock is the single source of truth for the version. Repeating it here as a
+      # literal is what drifted on the 0.15.10 -> 0.16.3 bump: Dependabot updates the
+      # lockfile but cannot see a string in a workflow, so CI silently kept linting
+      # with the previous release. --check also asserts the pre-commit rev agrees,
+      # since a rev cannot be derived at run time.
+      - name: Resolve the pinned Ruff version
+        id: ruff
+        # --no-project avoids needing the private dependency; --python pins the
+        # interpreter, since tomllib requires 3.11 and the runner default may move.
+        run: |
+          version=$(uv run --no-project --python 3.12 python tools/ruff_version.py --check)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Installed standalone rather than through the project, so this job needs no
+      # private dependency and therefore no deploy key. --no-build installs from
+      # wheels only, so no sdist setup script is ever executed.
       - name: Install Ruff only (no private deps needed)
-        run: uv tool install --no-build "ruff==0.16.3"
+        run: uv tool install --no-build "ruff==${{ steps.ruff.outputs.version }}"
 
       # --from pins the version for the run itself; without it `uv tool run`
       # re-resolves ruff independently of the install step above.
       - name: Ruff lint
-        run: uv tool run --no-build --from "ruff==0.16.3" ruff check src/ tests/ tools/
+        run: uv tool run --no-build --from "ruff==${{ steps.ruff.outputs.version }}" ruff check src/ tests/ tools/
 
       - name: Ruff format check
-        run: uv tool run --no-build --from "ruff==0.16.3" ruff format --check src/ tests/ tools/
+        run: |
+          uv tool run --no-build --from "ruff==${{ steps.ruff.outputs.version }}" \
+            ruff format --check src/ tests/ tools/
 
       # The test suite imports merge through pytest's pythonpath = ["src"], which
       # resolves it from the source tree and never from the built artifact -- so full
