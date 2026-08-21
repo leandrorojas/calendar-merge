@@ -4,7 +4,16 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
-## [Unreleased]
+## [v0.1.16] — 2026-08-21
+
+### Changed
+
+- `_parse_source_events` split into `_field_datetime`, `_parse_single_event` and
+  `_parse_recurring_event`. Adding recurrence expansion had taken it from a cognitive
+  complexity of 13 to 28 against a limit of 15, and the single-event path still inlined the
+  datetime rebuild that `_normalise_ics_datetime` was added for, so the same code existed
+  twice. Behaviour is unchanged: all tests pass unmodified and the three live feeds parse
+  identically before and after.
 
 ### Added
 
