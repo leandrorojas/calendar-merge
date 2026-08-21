@@ -97,6 +97,12 @@ TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 # and the alternative is aborting the whole merge until the next scheduled run.
 TWO_FACTOR_CODE_ATTEMPTS = 3
 
+# Bounds the source-calendar loop. Not a configuration limit -- the list normally ends
+# when a section is absent. This only stops a persistent fault *before* that section read
+# from looping forever, which became possible once per-source failures stopped aborting
+# the run: a hung schedule is worse than a failed one.
+MAX_SOURCE_CALENDARS = 100
+
 # pyicloud >= 2.6.5 asks Apple for a code on its own from inside authenticate().
 # Named here so the canary test fails loudly if a future release renames it.
 PYICLOUD_AUTO_2FA_METHOD = "_request_2fa_code"
@@ -1428,7 +1434,11 @@ def main():
         one_liner=True,
     )
     source_index = 0
+    failures: list[str] = []
     while True:
+        if source_index >= MAX_SOURCE_CALENDARS:
+            failures.append(f"stopped after {MAX_SOURCE_CALENDARS} indexes without reaching the end of the list")
+            break
         try:
             _process_source_calendar(
                 yaml_helper,
@@ -1443,6 +1453,9 @@ def main():
                 calendar_guid,
             )
         except YamlError:
+            # Not a failure: this is how the loop learns there is no section at this
+            # index. It must stay ahead of the handler below, which would otherwise
+            # read the end of the list as a broken calendar and never terminate.
             print_step(
                 TAG_CALENDAR_MERGE,
                 term.TerminalColors.yellow.value
@@ -1451,7 +1464,22 @@ def main():
                 one_liner=True,
             )
             break
+        except Exception as err:  # one calendar must not cost the calendars after it
+            # Aborting here left healthy sources holding yesterday's picture with
+            # nothing to say so: on 2026-08-20 a single already-deleted event in
+            # source 0 meant sources 1 and 2 were never processed at all.
+            #
+            # term.print_failed() is deliberately not called -- every raise site in
+            # _process_source_calendar already closed its own pending line.
+            failures.append(f"{YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)}: {_describe_error(err)}")
+            logger.exception("source calendar %d failed", source_index)
         source_index += 1
+
+    if failures:
+        # Raised only once every source has had its turn, so a single alert describes
+        # the whole run instead of whichever calendar happened to fail first. The
+        # __main__ handler turns this into the Telegram message.
+        raise RuntimeError(f"{len(failures)} of {source_index} source calendars failed - " + "; ".join(failures))
 
     if args.last:
         send_telegram_message("🌙 calendar-merge finished for today.")

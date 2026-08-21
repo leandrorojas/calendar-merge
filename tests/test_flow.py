@@ -672,8 +672,13 @@ class TestProcessSourceCalendar:
 class FlowSpy:
     """Records main()'s calls into the helpers it orchestrates."""
 
-    def __init__(self, source_count=1):
+    def __init__(self, source_count=1, fail_on=None, never_ends=False):
         self.source_count = source_count
+        # Indexes that raise a non-YamlError, i.e. a calendar that fails rather than
+        # one that does not exist.
+        self.fail_on = dict(fail_on or {})
+        # When set, no index ever raises YamlError, so only the loop bound stops it.
+        self.never_ends = never_ends
         self.processed: list[int] = []
         self.messages: list[str] = []
 
@@ -699,12 +704,110 @@ class FlowSpy:
         monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: self.messages.append(msg))
 
         def fake_process(yaml_helper, index, *args, **kwargs):
-            if index >= self.source_count:
+            if index in self.fail_on:
+                raise self.fail_on[index]
+            if not self.never_ends and index >= self.source_count:
                 raise YamlError(f"no section {index}")
             self.processed.append(index)
 
         monkeypatch.setattr(merge, "_process_source_calendar", fake_process)
         return self
+
+
+class TestSourceCalendarIsolation:
+    """One calendar's failure must not cost the calendars after it.
+
+    Reproduces 2026-08-20: an already-deleted event in source 0 aborted the run, so
+    sources 1 and 2 were never processed and silently kept yesterday's picture.
+    """
+
+    def test_a_failing_source_does_not_stop_the_others(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=3, fail_on={0: RuntimeError("Unable to download calendar vf [0]")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="source calendars failed"):
+            merge.main()
+
+        assert spy.processed == [1, 2]
+
+    def test_the_run_still_fails(self, monkeypatch, tmp_path, quiet_terminal):
+        """A partial sync is not a success; the existing alert must still fire."""
+        FlowSpy(source_count=3, fail_on={1: RuntimeError("boom")}).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="1 of 3 source calendars failed"):
+            merge.main()
+
+    def test_one_alert_summarises_every_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """Alert once with a summary, rather than once per failed source."""
+        FlowSpy(
+            source_count=3,
+            fail_on={0: RuntimeError("first broke"), 2: RuntimeError("third broke")},
+        ).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError) as excinfo:
+            merge.main()
+
+        message = str(excinfo.value)
+        assert "2 of 3 source calendars failed" in message
+        assert "source-calendar-0" in message
+        assert "source-calendar-2" in message
+
+    def test_the_summary_carries_each_underlying_cause(self, monkeypatch, tmp_path, quiet_terminal):
+        cause = ConnectionError("feed timed out")
+        wrapper = RuntimeError("Unable to download calendar vf [0]")
+        wrapper.__cause__ = cause
+        FlowSpy(source_count=2, fail_on={0: wrapper}).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="ConnectionError: feed timed out"):
+            merge.main()
+
+    def test_a_clean_run_raises_nothing(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=3).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        merge.main()
+
+        assert spy.processed == [0, 1, 2]
+
+    def test_the_end_of_day_message_is_withheld_after_a_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """Announcing "finished for today" alongside a failure alert contradicts it."""
+        spy = FlowSpy(source_count=2, fail_on={0: RuntimeError("boom")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge", "--last"])
+
+        with pytest.raises(RuntimeError):
+            merge.main()
+
+        assert not any("finished for today" in message for message in spy.messages)
+
+    def test_the_end_of_day_message_still_sends_on_a_clean_run(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=2)
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge", "--last"])
+
+        merge.main()
+
+        assert any("finished for today" in message for message in spy.messages)
+
+    def test_the_loop_is_bounded(self, monkeypatch, tmp_path, quiet_terminal):
+        """A fault before the section read would otherwise never terminate.
+
+        Catching per-source failures made that possible, and a hung schedule is worse
+        than a failed one.
+        """
+        monkeypatch.setattr(merge, "MAX_SOURCE_CALENDARS", 3)
+        spy = FlowSpy(never_ends=True, fail_on=dict.fromkeys(range(10), RuntimeError("always broken")))
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="stopped after 3 indexes"):
+            merge.main()
+
+        assert spy.processed == []
 
 
 class TestMain:
