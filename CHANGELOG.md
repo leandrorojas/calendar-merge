@@ -78,15 +78,6 @@ tagged in git.
 
 ## [v0.1.13] — 2026-08-20
 
-### Added
-
-- `README.md` documents the scheduling constraint: two invocations must never share a minute.
-  Concurrent runs act on the same stale iCloud snapshot, which is what produced the `404` on
-  2026-08-20 and can also create duplicate events. Written down because the collision came
-  from two cron lines that look independent — `0 8 * * 1-5` and `*/15 8-17 * * 1-5`.
-
-## [Unreleased]
-
 ### Security
 
 - Lockfile upgraded, clearing all 15 Dependabot advisories found when alerts were switched on:
@@ -99,6 +90,13 @@ tagged in git.
   7.3.0 produces byte-identical results to 7.2.2 on all three live feeds (same totals, same
   kept counts, same slot hashes), the `python-telegram-bot` 22.8 surface `pyfangs` calls is
   unchanged, and `load_dotenv` still reads a real file.
+
+### Added
+
+- `README.md` documents the scheduling constraint: two invocations must never share a minute.
+  Concurrent runs act on the same stale iCloud snapshot, which is what produced the `404` on
+  2026-08-20 and can also create duplicate events. Written down because the collision came
+  from two cron lines that look independent — `0 8 * * 1-5` and `*/15 8-17 * * 1-5`.
 
 ## [v0.1.12] — 2026-08-20
 
