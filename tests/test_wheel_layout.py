@@ -38,33 +38,39 @@ class TestAssertWheelLayout:
         files = dict(WORKING)
         del files["merge.py"]
         files["src/merge.py"] = ""
+        directory = wheel_dir(tmp_path, files)
 
         with pytest.raises(LayoutError, match=r"neither merge\.py"):
-            assert_wheel_layout(wheel_dir(tmp_path, files))
+            assert_wheel_layout(directory)
 
     def test_rejects_an_empty_console_scripts_section(self, tmp_path):
         """Otherwise the loop has nothing to do and the check passes vacuously."""
         files = {"x-1.0.dist-info/entry_points.txt": "[console_scripts]\n", "merge.py": ""}
+        directory = wheel_dir(tmp_path, files)
 
         with pytest.raises(LayoutError, match="empty"):
-            assert_wheel_layout(wheel_dir(tmp_path, files))
+            assert_wheel_layout(directory)
 
     def test_rejects_entry_points_without_console_scripts(self, tmp_path):
         files = {"x-1.0.dist-info/entry_points.txt": "[gui_scripts]\na = b:c\n", "merge.py": ""}
+        directory = wheel_dir(tmp_path, files)
 
         with pytest.raises(LayoutError, match="no console_scripts"):
-            assert_wheel_layout(wheel_dir(tmp_path, files))
+            assert_wheel_layout(directory)
 
     def test_rejects_a_wheel_with_no_entry_points(self, tmp_path):
+        directory = wheel_dir(tmp_path, {"x-1.0.dist-info/METADATA": "Name: x\n"})
+
         with pytest.raises(LayoutError, match="no entry points"):
-            assert_wheel_layout(wheel_dir(tmp_path, {"x-1.0.dist-info/METADATA": "Name: x\n"}))
+            assert_wheel_layout(directory)
 
     def test_ignores_a_stray_entry_points_file(self, tmp_path):
         """Metadata is read from dist-info, not from any similarly named file."""
         files = {"data/entry_points.txt": "[console_scripts]\ncm = merge:main\n", "merge.py": ""}
+        directory = wheel_dir(tmp_path, files)
 
         with pytest.raises(LayoutError, match="no entry points"):
-            assert_wheel_layout(wheel_dir(tmp_path, files))
+            assert_wheel_layout(directory)
 
     def test_accepts_a_package_rather_than_a_module(self, tmp_path):
         """A future layout may ship merge/ as a package instead of merge.py."""
