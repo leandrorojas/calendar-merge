@@ -363,7 +363,9 @@ class TestSyncSummaryLine:
         process(monkeypatch, tmp_path, ics_events=[{"start": "20260812T120000Z", "end": "20260812T130000Z"}])
 
         summary = [line for line in quiet_terminal if "added," in line]
-        assert summary and "already gone" not in summary[0]
+
+        assert summary, "expected a summary line"
+        assert "already gone" not in summary[0]
 
     def test_mentions_already_gone_when_it_happens(self, monkeypatch, tmp_path, quiet_terminal):
         class NotFound(Exception):
