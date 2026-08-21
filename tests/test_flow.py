@@ -669,16 +669,28 @@ class TestProcessSourceCalendar:
 # --- main ---
 
 
+class LoopRunaway(BaseException):
+    """Raised by the spy when main()'s loop runs away.
+
+    Derived from BaseException so main()'s `except Exception` cannot swallow it: a
+    missing loop bound then fails the test immediately instead of hanging it, which
+    would otherwise hang CI rather than reporting anything.
+    """
+
+
 class FlowSpy:
     """Records main()'s calls into the helpers it orchestrates."""
 
-    def __init__(self, source_count=1, fail_on=None, never_ends=False):
+    def __init__(self, source_count=1, fail_on=None, never_ends=False, runaway_after=None):
         self.source_count = source_count
         # Indexes that raise a non-YamlError, i.e. a calendar that fails rather than
         # one that does not exist.
         self.fail_on = dict(fail_on or {})
         # When set, no index ever raises YamlError, so only the loop bound stops it.
         self.never_ends = never_ends
+        # Escape hatch for that case: raises past main()'s handler after N attempts.
+        self.runaway_after = runaway_after
+        self.attempts = 0
         self.processed: list[int] = []
         self.messages: list[str] = []
 
@@ -704,6 +716,9 @@ class FlowSpy:
         monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: self.messages.append(msg))
 
         def fake_process(yaml_helper, index, *args, **kwargs):
+            self.attempts += 1
+            if self.runaway_after is not None and self.attempts > self.runaway_after:
+                raise LoopRunaway(f"loop reached {self.attempts} attempts with no bound")
             if index in self.fail_on:
                 raise self.fail_on[index]
             if not self.never_ends and index >= self.source_count:
@@ -800,7 +815,11 @@ class TestSourceCalendarIsolation:
         than a failed one.
         """
         monkeypatch.setattr(merge, "MAX_SOURCE_CALENDARS", 3)
-        spy = FlowSpy(never_ends=True, fail_on=dict.fromkeys(range(10), RuntimeError("always broken")))
+        spy = FlowSpy(
+            never_ends=True,
+            fail_on=dict.fromkeys(range(50), RuntimeError("always broken")),
+            runaway_after=20,
+        )
         spy.install(monkeypatch, tmp_path)
         monkeypatch.setattr("sys.argv", ["calendar-merge"])
 
