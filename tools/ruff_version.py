@@ -27,7 +27,10 @@ PRE_COMMIT = pathlib.Path(".pre-commit-config.yaml")
 # mistaken for it. Captures the whole token rather than a restricted character class:
 # validation belongs to SAFE_VERSION alone, or a malformed rev is silently truncated to
 # its valid prefix and reported as drift instead of as malformed.
-PRE_COMMIT_REV = re.compile(r"ruff-pre-commit\s*\n\s*rev:\s*v?(?P<version>\S+)")
+# Each part matches a disjoint character set, so there is exactly one way to match
+# any input and no backtracking. `\s*\n\s*` would be ambiguous, since \s includes
+# the newline itself.
+PRE_COMMIT_REV = re.compile(r"ruff-pre-commit[^\n]*\n[ \t]*rev:[ \t]*v?(?P<version>\S+)")
 # The result is interpolated into a shell command in CI, and uv.lock is a checked-in
 # file a fork pull request can edit. Anything outside this shape -- a quote, a
 # semicolon, whitespace, a newline -- is rejected rather than passed along.
