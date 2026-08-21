@@ -8,6 +8,22 @@ tagged in git.
 
 ### Added
 
+- CI derives the Ruff version from `uv.lock` rather than repeating it. It was declared in six
+  places and Dependabot could see two: it updates `pyproject.toml` and the lockfile, but not the
+  three literals in `ci.yml` nor the `rev` in `.pre-commit-config.yaml`. The 0.15.10 → 0.16.3
+  bump therefore left CI linting with the previous release while local runs used the new one —
+  the drift the exact pin exists to prevent — and nothing detected it.
+
+  `tools/ruff_version.py` reads the locked version, and `--check` asserts the pre-commit `rev`
+  agrees, since a `rev` cannot be derived at run time. Drift now fails on the Dependabot PR
+  itself with a message naming the fix. Standard library only, run under `uv run --no-project`,
+  so the lint job still needs no private dependency.
+
+  Guarded twice, because the value reaches a shell and `uv.lock` is editable by a fork pull
+  request: the script rejects anything not shaped like a version, and the workflow passes it
+  through `env:` rather than `${{ }}`, which GitHub substitutes textually before the shell
+  parses the line.
+
 - CI asserts the wheel layout. The test suite imports `merge` through pytest's
   `pythonpath = ["src"]`, which resolves it from the source tree and never from the built
   artifact, so full coverage says nothing about whether an installed copy can start — a wheel
