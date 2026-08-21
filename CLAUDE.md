@@ -50,8 +50,10 @@ two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (n
 left CI linting with the previous release while local runs used the new one, which is the exact
 drift the pin was introduced to prevent. `--check` additionally asserts the `rev` in
 `.pre-commit-config.yaml` agrees, since a pre-commit `rev` cannot be derived at run time and so
-has to be verified instead. The script uses only the standard library and runs under
-`uv run --no-project`, keeping the lint job free of the private dependency and its deploy key.
+has to be verified instead. The script imports only the standard library, so the step runs it with plain `python` rather
+than through `uv run`: there is no environment to resolve and nothing to build, which keeps
+the lint job free of the private dependency and its deploy key. Routing it through uv meant
+either resolving dependencies it does not have or passing flags to suppress that.
 
 The resolved version reaches a shell, and `uv.lock` is a checked-in file a fork pull request can
 edit, so it is guarded twice. The script rejects anything not matching `SAFE_VERSION`, and the

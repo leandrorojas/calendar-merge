@@ -78,6 +78,14 @@ class TestVersionValidation:
         with pytest.raises(VersionError):
             locked_version(lock)
 
+    def test_rejects_non_ascii_digits(self, tmp_path):
+        """re.ASCII keeps \\d equal to [0-9]; without it this would be accepted."""
+        lock = tmp_path / "uv.lock"
+        lock.write_text('[[package]]\nname = "ruff"\nversion = "\u0660.\u0661"\n')
+
+        with pytest.raises(VersionError, match="not a valid version"):
+            locked_version(lock)
+
     @pytest.mark.parametrize("good", ["0.16.3", "2.9.0.post0", "1.0.0rc1", "0.16.3+local", "1.2.3-beta.1"])
     def test_accepts_real_version_shapes(self, tmp_path, good):
         lock = tmp_path / "uv.lock"

@@ -8,8 +8,8 @@ and it happened silently on the 0.15.10 to 0.16.3 bump.
 
 `uv.lock` is the single source of truth. CI reads the version from here rather than
 repeating it, and the pre-commit `rev` is asserted against it because a `rev` cannot be
-derived at run time. Uses only the standard library, so the lint job still needs no
-private dependency.
+derived at run time. Uses only the standard library -- `tomllib`, so Python 3.11 or newer -- so
+the lint job needs neither the private dependency nor a resolved environment.
 
     python tools/ruff_version.py           # print the locked version
     python tools/ruff_version.py --check   # also assert the pre-commit rev matches
@@ -34,7 +34,10 @@ PRE_COMMIT_REV = re.compile(r"ruff-pre-commit[^\n]*\n[ \t]*rev:[ \t]*v?(?P<versi
 # The result is interpolated into a shell command in CI, and uv.lock is a checked-in
 # file a fork pull request can edit. Anything outside this shape -- a quote, a
 # semicolon, whitespace, a newline -- is rejected rather than passed along.
-SAFE_VERSION = re.compile(r"\A[0-9][0-9a-zA-Z.+\-]*\Z")
+# re.ASCII is load-bearing: \d matches Unicode digits by default, which would widen
+# this beyond ASCII for a value that reaches a shell. With the flag it is exactly
+# [0-9]. Do not drop it when simplifying.
+SAFE_VERSION = re.compile(r"\A\d[\dA-Za-z.+\-]*\Z", re.ASCII)
 
 
 class VersionError(Exception):
