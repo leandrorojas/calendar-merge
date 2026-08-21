@@ -1,19 +1,14 @@
 """Tests for the CI wheel-layout check.
 
-The check exists because the rest of the suite cannot see packaging: `merge` is
-imported through pytest's `pythonpath = ["src"]`, never from a built wheel. Its whole
-value is therefore in failing correctly, which is what these pin -- a check that passes
-while verifying nothing is worse than no check at all.
+The check exists because the rest of the suite cannot see packaging: `merge` is imported
+from the source tree via pytest's `pythonpath`, never from a built wheel. Its whole value
+is therefore in failing correctly, which is what these pin -- a check that passes while
+verifying nothing is worse than no check at all.
 """
 
-import pathlib
-import sys
 import zipfile
 
 import pytest
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
-
 from assert_wheel_layout import LayoutError, assert_wheel_layout, main
 
 WORKING = {

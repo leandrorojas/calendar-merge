@@ -44,9 +44,11 @@ def _read_entry_points(archive: zipfile.ZipFile) -> configparser.ConfigParser:
 def assert_wheel_layout(directory: pathlib.Path) -> list[str]:
     """Return the console scripts verified, or raise LayoutError."""
     wheel = _find_wheel(directory)
-    archive = zipfile.ZipFile(wheel)
-    names = archive.namelist()
-    entry_points = _read_entry_points(archive)
+    # Closed before any LayoutError is raised; everything below needs only the names
+    # and the parsed metadata, not the open archive.
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        entry_points = _read_entry_points(archive)
 
     if not entry_points.has_section("console_scripts"):
         raise LayoutError("wheel has entry points but no console_scripts section")

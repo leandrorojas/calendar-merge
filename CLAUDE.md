@@ -48,8 +48,9 @@ two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (n
 `tests/test_wheel_layout.py`. It is tested for the same reason it exists: its value is entirely
 in failing correctly, and its worst failure mode is passing while verifying nothing — an empty
 `console_scripts` section would leave its loop with nothing to do. `tools/` is linted and
-typechecked alongside `src/` and `tests/`, but is outside the coverage gate, which measures
-`src/` only.
+typechecked alongside `src/` and `tests/`, and is on pytest's `pythonpath` so the tests
+import it normally rather than editing `sys.path`. It stays outside the coverage gate,
+which measures `src/` only.
 
 ## Tests
 
