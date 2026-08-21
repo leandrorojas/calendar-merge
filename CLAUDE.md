@@ -53,6 +53,14 @@ drift the pin was introduced to prevent. `--check` additionally asserts the `rev
 has to be verified instead. The script uses only the standard library and runs under
 `uv run --no-project`, keeping the lint job free of the private dependency and its deploy key.
 
+The resolved version reaches a shell, and `uv.lock` is a checked-in file a fork pull request can
+edit, so it is guarded twice. The script rejects anything not matching `SAFE_VERSION`, and the
+workflow passes the value through `env:` rather than `${{ }}` — GitHub substitutes `${{ }}`
+textually before the shell parses the line, so a crafted version string would otherwise be a
+command injection. The regex that locates the pre-commit `rev` deliberately captures the whole
+token rather than a safe character class: validation belongs in one place, or a malformed rev is
+silently truncated to its valid prefix and reported as drift instead of as malformed.
+
 `tools/assert_wheel_layout.py` is the CI packaging check, covered by
 `tests/test_wheel_layout.py`. It is tested for the same reason it exists: its value is entirely
 in failing correctly, and its worst failure mode is passing while verifying nothing — an empty

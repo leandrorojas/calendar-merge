@@ -56,6 +56,43 @@ class TestLockedVersion:
             locked_version(lock)
 
 
+class TestVersionValidation:
+    """The result reaches a shell in CI, and uv.lock is editable by a fork PR."""
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            '0.1"; echo INJECTED; #',
+            "0.1 && curl evil",
+            "0.1 | sh",
+            "0.1$(id)",
+            "0.1`id`",
+            "0.1;id",
+            "",
+        ],
+    )
+    def test_rejects_anything_not_shaped_like_a_version(self, tmp_path, hostile):
+        lock = tmp_path / "uv.lock"
+        lock.write_text(f'[[package]]\nname = "ruff"\nversion = {hostile!r}\n')
+
+        with pytest.raises(VersionError):
+            locked_version(lock)
+
+    @pytest.mark.parametrize("good", ["0.16.3", "2.9.0.post0", "1.0.0rc1", "0.16.3+local", "1.2.3-beta.1"])
+    def test_accepts_real_version_shapes(self, tmp_path, good):
+        lock = tmp_path / "uv.lock"
+        lock.write_text(f'[[package]]\nname = "ruff"\nversion = "{good}"\n')
+
+        assert locked_version(lock) == good
+
+    def test_rejects_a_hostile_pre_commit_rev(self, tmp_path):
+        config = tmp_path / ".pre-commit-config.yaml"
+        config.write_text("repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n    rev: v0.1;id\n")
+
+        with pytest.raises(VersionError, match="not a valid version"):
+            pre_commit_version(config)
+
+
 class TestPreCommitVersion:
     def test_reads_the_rev(self, tmp_path):
         _, config = write(tmp_path)

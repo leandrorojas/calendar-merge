@@ -19,6 +19,11 @@ tagged in git.
   itself with a message naming the fix. Standard library only, run under `uv run --no-project`,
   so the lint job still needs no private dependency.
 
+  Guarded twice, because the value reaches a shell and `uv.lock` is editable by a fork pull
+  request: the script rejects anything not shaped like a version, and the workflow passes it
+  through `env:` rather than `${{ }}`, which GitHub substitutes textually before the shell
+  parses the line.
+
 - CI asserts the wheel layout. The test suite imports `merge` through pytest's
   `pythonpath = ["src"]`, which resolves it from the source tree and never from the built
   artifact, so full coverage says nothing about whether an installed copy can start — a wheel

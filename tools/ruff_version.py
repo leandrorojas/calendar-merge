@@ -23,13 +23,26 @@ import tomllib
 
 LOCKFILE = pathlib.Path("uv.lock")
 PRE_COMMIT = pathlib.Path(".pre-commit-config.yaml")
-# Matches the rev on the ruff-pre-commit repo only, so an unrelated hook's rev is
-# never mistaken for it.
-PRE_COMMIT_REV = re.compile(r"ruff-pre-commit\s*\n\s*rev:\s*v?(?P<version>[0-9][0-9a-zA-Z.\-+]*)")
+# Locates the rev on the ruff-pre-commit repo only, so an unrelated hook's rev is never
+# mistaken for it. Captures the whole token rather than a restricted character class:
+# validation belongs to SAFE_VERSION alone, or a malformed rev is silently truncated to
+# its valid prefix and reported as drift instead of as malformed.
+PRE_COMMIT_REV = re.compile(r"ruff-pre-commit\s*\n\s*rev:\s*v?(?P<version>\S+)")
+# The result is interpolated into a shell command in CI, and uv.lock is a checked-in
+# file a fork pull request can edit. Anything outside this shape -- a quote, a
+# semicolon, whitespace, a newline -- is rejected rather than passed along.
+SAFE_VERSION = re.compile(r"\A[0-9][0-9a-zA-Z.+\-]*\Z")
 
 
 class VersionError(Exception):
-    """The pinned Ruff version is missing or inconsistent."""
+    """The pinned Ruff version is missing, inconsistent, or not a version at all."""
+
+
+def _validated(version: str, source: pathlib.Path) -> str:
+    """Return the version, or raise if it is not shaped like one."""
+    if not SAFE_VERSION.match(version):
+        raise VersionError(f"{source} declares {version!r}, which is not a valid version string")
+    return version
 
 
 def locked_version(lockfile: pathlib.Path = LOCKFILE) -> str:
@@ -39,10 +52,10 @@ def locked_version(lockfile: pathlib.Path = LOCKFILE) -> str:
     packages = tomllib.loads(lockfile.read_text()).get("package", [])
     for package in packages:
         if package.get("name") == "ruff":
-            version = package.get("version")
+            version = str(package.get("version") or "")
             if not version:
                 raise VersionError(f"ruff is in {lockfile} with no version")
-            return str(version)
+            return _validated(version, lockfile)
     raise VersionError(f"ruff is not in {lockfile}; is it still a dev dependency?")
 
 
@@ -53,7 +66,7 @@ def pre_commit_version(config: pathlib.Path = PRE_COMMIT) -> str:
     match = PRE_COMMIT_REV.search(config.read_text())
     if match is None:
         raise VersionError(f"no ruff-pre-commit rev found in {config}")
-    return match.group("version")
+    return _validated(match.group("version"), config)
 
 
 def check(lockfile: pathlib.Path = LOCKFILE, config: pathlib.Path = PRE_COMMIT) -> str:
