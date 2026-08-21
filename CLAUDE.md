@@ -208,6 +208,29 @@ means "changed" rather than "attempted"; counting before would report a failed a
 An earlier note here called that an equivalent mutant, which was true only while a failure
 skipped the report entirely — it is now killed by two tests.
 
+**One source calendar's failure does not cost the calendars after it.** `main()`'s loop
+catches `YamlError` as its *termination signal* — a missing section is how it learns the list
+has ended, which is why that handler must stay ahead of the one below it. Every other exception
+is recorded against its source and the loop continues.
+
+Aborting cost far more than the calendar that failed. On 2026-08-20 a single already-deleted
+event in `source-calendar-0` meant sources 1 and 2 were never processed: they silently kept the
+previous run's picture while one alert named only the first calendar.
+
+Failures are raised **once, after every source has had its turn**, so a single alert describes
+the whole run rather than whichever calendar happened to fail first. The run still fails — a
+partial sync is not a success — and `--last` withholds "finished for today" rather than
+contradicting the failure alert.
+
+Configuration errors are isolated too, not just transient ones. A malformed section will fail
+identically on every run, but aborting means the healthy calendars stop syncing until somebody
+notices, which is worse for the calendar than syncing them and naming the broken one.
+
+`MAX_SOURCE_CALENDARS` bounds the loop. Catching per-source failures made an unbounded loop
+possible where a persistent fault *before* the section read would previously have aborted the
+run, and a hung schedule is worse than a failed one. Its test raises a `BaseException` past the
+handler, so a missing bound fails immediately instead of hanging.
+
 **A 404 when deleting means the event is already gone, and is not an error.**
 `_sync_events_to_icloud` treats it as success. Deleting is idempotent in intent: the action
 asks for the event not to exist, and a 404 says it does not. pyicloud's `remove_event` fetches

@@ -4,6 +4,29 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Fixed
+
+- A source calendar's failure no longer costs the calendars after it. `main()`'s loop caught
+  only `YamlError` — its termination signal rather than error handling — so any other exception
+  escaped the loop entirely. On 2026-08-20 a single already-deleted event in `source-calendar-0`
+  meant sources 1 and 2 were never processed; they silently kept the previous run's picture while
+  one alert named only the first calendar.
+
+  Failures are now collected per source and raised once at the end, so every calendar gets its
+  turn and a single alert describes the whole run: `2 of 3 source calendars failed - ...`, each
+  with its underlying cause. The run still fails, because a partial sync is not a success, and
+  `--last` withholds "finished for today" rather than contradicting the failure alert.
+
+  Configuration errors are isolated too. A malformed section fails identically every run, but
+  aborting stops the healthy calendars from syncing until somebody notices — worse for the
+  calendar than syncing them and naming the broken one.
+
+  `MAX_SOURCE_CALENDARS` bounds the loop: catching per-source failures made an unbounded loop
+  possible where a persistent fault before the section read would previously have aborted, and a
+  hung schedule is worse than a failed one.
+
 ## [v0.1.16] — 2026-08-21
 
 ### Changed
