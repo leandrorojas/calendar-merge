@@ -36,6 +36,10 @@ def _read_entry_points(archive: zipfile.ZipFile) -> configparser.ConfigParser:
     candidates = [n for n in archive.namelist() if n.endswith(".dist-info/entry_points.txt")]
     if not candidates:
         raise LayoutError("wheel declares no entry points; the console script would not be installed")
+    if len(candidates) > 1:
+        # Reading the first would let archive order decide which entry points were
+        # verified -- the same ambiguity _find_wheel refuses for multiple wheels.
+        raise LayoutError(f"wheel has more than one dist-info entry_points.txt: {sorted(candidates)}")
     parsed = configparser.ConfigParser()
     parsed.read_string(archive.read(candidates[0]).decode())
     return parsed

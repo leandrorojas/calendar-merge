@@ -21,11 +21,11 @@ uv run calendar-merge --last     # Evening sync + Telegram end-of-day notificati
 ## Quality Checks
 
 ```bash
-uv run ruff check src/ tests/            # Lint
-uv run ruff format --check src/ tests/   # Format check
-uv run mypy src/ tests/                  # Type check
-uv run pytest tests/ -v                  # Unit tests
-uv run pytest --cov                      # Unit tests + coverage gate
+uv run ruff check src/ tests/ tools/            # Lint
+uv run ruff format --check src/ tests/ tools/   # Format check
+uv run mypy src/ tests/ tools/                  # Type check
+uv run pytest tests/ -v                         # Unit tests
+uv run pytest --cov                             # Unit tests + coverage gate
 ```
 
 CodeQL (`.github/workflows/codeql.yml`) runs security queries on the same triggers plus a weekly

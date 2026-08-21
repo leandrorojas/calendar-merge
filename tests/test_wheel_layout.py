@@ -67,6 +67,22 @@ class TestAssertWheelLayout:
         with pytest.raises(LayoutError, match="no entry points"):
             assert_wheel_layout(directory)
 
+    def test_refuses_to_guess_between_several_metadata_files(self, tmp_path):
+        """Reading the first would let archive order decide what was verified.
+
+        The second dist-info here names a module that is absent, so picking by order
+        turns a malformed wheel into a pass.
+        """
+        files = {
+            "a-1.0.dist-info/entry_points.txt": "[console_scripts]\ncm = merge:main\n",
+            "b-2.0.dist-info/entry_points.txt": "[console_scripts]\ncm = absent:main\n",
+            "merge.py": "",
+        }
+        directory = wheel_dir(tmp_path, files)
+
+        with pytest.raises(LayoutError, match="more than one dist-info"):
+            assert_wheel_layout(directory)
+
     def test_accepts_a_package_rather_than_a_module(self, tmp_path):
         """A future layout may ship merge/ as a package instead of merge.py."""
         files = {
