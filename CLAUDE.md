@@ -21,11 +21,11 @@ uv run calendar-merge --last     # Evening sync + Telegram end-of-day notificati
 ## Quality Checks
 
 ```bash
-uv run ruff check src/ tests/            # Lint
-uv run ruff format --check src/ tests/   # Format check
-uv run mypy src/ tests/                  # Type check
-uv run pytest tests/ -v                  # Unit tests
-uv run pytest --cov                      # Unit tests + coverage gate
+uv run ruff check src/ tests/ tools/            # Lint
+uv run ruff format --check src/ tests/ tools/   # Format check
+uv run mypy src/ tests/ tools/                  # Type check
+uv run pytest tests/ -v                         # Unit tests
+uv run pytest --cov                             # Unit tests + coverage gate
 ```
 
 CodeQL (`.github/workflows/codeql.yml`) runs security queries on the same triggers plus a weekly
@@ -43,6 +43,14 @@ like a permissions failure and is not one.
 CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
+
+`tools/assert_wheel_layout.py` is the CI packaging check, covered by
+`tests/test_wheel_layout.py`. It is tested for the same reason it exists: its value is entirely
+in failing correctly, and its worst failure mode is passing while verifying nothing — an empty
+`console_scripts` section would leave its loop with nothing to do. `tools/` is linted and
+typechecked alongside `src/` and `tests/`, and is on pytest's `pythonpath` so the tests
+import it normally rather than editing `sys.path`. It stays outside the coverage gate,
+which measures `src/` only.
 
 ## Tests
 

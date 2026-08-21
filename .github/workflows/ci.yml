@@ -41,10 +41,10 @@ jobs:
       # --from pins the version for the run itself; without it `uv tool run`
       # re-resolves ruff independently of the install step above.
       - name: Ruff lint
-        run: uv tool run --no-build --from "ruff==0.16.3" ruff check src/ tests/
+        run: uv tool run --no-build --from "ruff==0.16.3" ruff check src/ tests/ tools/
 
       - name: Ruff format check
-        run: uv tool run --no-build --from "ruff==0.16.3" ruff format --check src/ tests/
+        run: uv tool run --no-build --from "ruff==0.16.3" ruff format --check src/ tests/ tools/
 
       # The test suite imports merge through pytest's pythonpath = ["src"], which
       # resolves it from the source tree and never from the built artifact -- so full
@@ -54,28 +54,7 @@ jobs:
       - name: Wheel layout
         run: |
           uv build --wheel -o dist
-          python - <<'CHECK'
-          import configparser, pathlib, zipfile
-
-          wheel = next(pathlib.Path("dist").glob("*.whl"))
-          archive = zipfile.ZipFile(wheel)
-          names = archive.namelist()
-
-          entry_points = configparser.ConfigParser()
-          entry_points.read_string(
-              archive.read(next(n for n in names if n.endswith("entry_points.txt"))).decode()
-          )
-          # Derived rather than hardcoded, so renaming the entry point without moving the
-          # module is caught as readily as moving the module without renaming it.
-          for script, target in entry_points["console_scripts"].items():
-              module = target.split(":")[0]
-              expected = module.replace(".", "/") + ".py"
-              assert expected in names, (
-                  f"console script {script!r} imports {module!r}, "
-                  f"but {expected} is not at the wheel root: {names}"
-              )
-              print(f"ok: {script} -> {module} ({expected})")
-          CHECK
+          python tools/assert_wheel_layout.py dist
 
   test-and-typecheck:
     name: Test & type check
@@ -115,7 +94,7 @@ jobs:
       # --frozen keeps the committed lockfile authoritative, and --no-build
       # blocks sdist setup scripts.
       - name: Mypy type check
-        run: uv run --no-sync --frozen --no-build mypy src/ tests/
+        run: uv run --no-sync --frozen --no-build mypy src/ tests/ tools/
 
       # --cov applies the coverage settings from pyproject, including
       # fail_under = 100, so a drop in coverage fails the build.

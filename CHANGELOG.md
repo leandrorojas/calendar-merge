@@ -15,6 +15,13 @@ tagged in git.
   expected module from `entry_points.txt` rather than hardcoding it, so renaming the entry point
   without moving the module is caught as readily as the reverse. It needs no private dependency,
   since building only runs the hatchling backend, and so lives in the lint job.
+
+  The check itself lives in `tools/assert_wheel_layout.py` rather than inline in the workflow,
+  so it is linted, typechecked and tested like any other code. It refuses to pass vacuously:
+  an empty `console_scripts` section, entry points without that section, a wheel with no entry
+  points, and an ambiguous choice between several wheels are each a failure with a message
+  naming the problem. Metadata is read from `*.dist-info/entry_points.txt` rather than any file
+  with that name.
 - `README.md` documents both ways to start the program and when each is preferable. The console
   script depends on packaging and syncs the environment first; running the module directly
   involves neither, which makes it the more predictable choice for a scheduled run.
