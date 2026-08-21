@@ -1327,8 +1327,10 @@ class TestSyncEventsToIcloud:
             def add_event(self, event):
                 raise ServerError("Server Error")
 
+        service = AlwaysFails()
+
         with pytest.raises(RuntimeError):
-            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         summary = next(index for index, line in enumerate(quiet_terminal) if "0 added" in line)
         closed = next(index for index, line in enumerate(quiet_terminal) if line == "<failed>")
@@ -1377,8 +1379,10 @@ class TestSyncEventsToIcloud:
 
         events = [merge_event(utc(2026, 8, 12, 12), utc(2026, 8, 12, 13), action=merge.EventAction.add, title="[T] a")]
 
+        service = AlwaysFails()
+
         with pytest.raises(RuntimeError):
-            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert any("[T] source: 0 added, 0 deleted" in line for line in quiet_terminal)
 
@@ -1396,8 +1400,10 @@ class TestSyncEventsToIcloud:
             )
         ]
 
+        service = AlwaysFails()
+
         with pytest.raises(RuntimeError):
-            merge._sync_events_to_icloud(AlwaysFails(), "cal-guid", CAL_TZ, events, "[T] source")
+            merge._sync_events_to_icloud(service, "cal-guid", CAL_TZ, events, "[T] source")
 
         assert any("[T] source: 0 added, 0 deleted" in line for line in quiet_terminal)
 

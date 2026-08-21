@@ -1027,74 +1027,80 @@ def _expand_recurrence(
     return slots
 
 
+def _field_datetime(file_event, field: str) -> datetime | None:
+    """Return a VEVENT date-time field in UTC, or None when absent or not a datetime.
+
+    Collapses the get-field, take-.dt, check-type, normalise sequence that both the
+    single-event and recurring paths need.
+    """
+    value = get_from_list(file_event, field)
+    if value is None:
+        return None
+    return _normalise_ics_datetime(value.dt)
+
+
+def _parse_single_event(
+    file_event, skip_days: list[str], window_start: datetime, window_end: datetime
+) -> MergeEvent | None:
+    """Parse a non-recurring VEVENT, or None when it does not belong in the window."""
+    start = _field_datetime(file_event, ICS_FIELD_DATE_START)
+    if start is None or str(start.weekday()) in skip_days:
+        return None
+    if not (window_start <= start <= window_end):
+        return None
+    end = _field_datetime(file_event, ICS_FIELD_DATE_END)
+    if end is None:
+        return None
+    return MergeEvent(None, start, end, None, None)
+
+
+def _parse_recurring_event(
+    file_event,
+    skip_days: list[str],
+    overrides: set[tuple[str, datetime]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[MergeEvent] | None:
+    """Occurrences a series places in the window, or None when its rule cannot be read.
+
+    None is distinct from an empty list: empty means the series genuinely contributes
+    nothing, while None tells the caller to fall back to the single-event path so an
+    unreadable rule costs its repeats rather than the meeting itself.
+    """
+    uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
+    occurrences = _expand_recurrence(file_event, uid, overrides, window_start, window_end)
+    if occurrences is None:
+        return None
+    return [
+        MergeEvent(None, start, end, None, None) for start, end in occurrences if str(start.weekday()) not in skip_days
+    ]
+
+
 def _parse_source_events(
     ics_calendar: Calendar, skip_days: list[str], utc_today_bod: datetime, utc_cut_off_date: datetime
 ) -> list[MergeEvent]:
     """Filter and parse VEVENTs from an ICS calendar into MergeEvents."""
     events: list[MergeEvent] = []
-    # The dialect is a property of the feed, so resolve it once.
+    # Both are properties of the whole feed, so resolve them once before the loop.
     google_feed = _is_google_feed(ics_calendar)
-    # Both are properties of the whole feed, so resolve them before the loop.
     overrides = _collect_recurrence_overrides(ics_calendar)
     for file_event in ics_calendar.walk(ICS_TAG_VEVENT):
         if _is_excluded_event(file_event, google_feed):
             continue
 
         if get_from_list(file_event, ICS_FIELD_RRULE) is not None:
-            uid = str(get_from_list(file_event, ICS_FIELD_UID) or "")
-            occurrences = _expand_recurrence(file_event, uid, overrides, utc_today_bod, utc_cut_off_date)
+            occurrences = _parse_recurring_event(file_event, skip_days, overrides, utc_today_bod, utc_cut_off_date)
             if occurrences is not None:
-                for start, end in occurrences:
-                    if str(start.weekday()) in skip_days:
-                        continue
-                    events.append(MergeEvent(None, start, end, None, None))
+                events.extend(occurrences)
                 # The master is only a template; its own DTSTART is the first
                 # occurrence and the expansion already covers it when in range.
                 continue
             # An unreadable rule falls through, so the meeting still contributes its
             # original occurrence instead of vanishing from the merged calendar.
 
-        start_datetime = get_from_list(file_event, ICS_FIELD_DATE_START)
-        if start_datetime is None:
-            continue
-
-        start_datetime = start_datetime.dt
-        if not isinstance(start_datetime, datetime):
-            continue
-
-        start_datetime = convert_to_utc(
-            datetime(
-                start_datetime.year,
-                start_datetime.month,
-                start_datetime.day,
-                start_datetime.hour,
-                start_datetime.minute,
-                tzinfo=start_datetime.tzinfo,
-            )
-        )
-
-        if str(start_datetime.weekday()) in skip_days:
-            continue
-
-        if not (utc_today_bod <= start_datetime <= utc_cut_off_date):
-            continue
-
-        end_datetime = get_from_list(file_event, ICS_FIELD_DATE_END)
-        if end_datetime is None:
-            continue
-
-        end_datetime = end_datetime.dt
-        end_datetime = convert_to_utc(
-            datetime(
-                end_datetime.year,
-                end_datetime.month,
-                end_datetime.day,
-                end_datetime.hour,
-                end_datetime.minute,
-                tzinfo=end_datetime.tzinfo,
-            )
-        )
-        events.append(MergeEvent(None, start_datetime, end_datetime, None, None))
+        parsed = _parse_single_event(file_event, skip_days, utc_today_bod, utc_cut_off_date)
+        if parsed is not None:
+            events.append(parsed)
     return _deduplicate_event_slots(events)
 
 
