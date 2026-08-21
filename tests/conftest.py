@@ -326,16 +326,26 @@ class FakeYamlHelper:
 
     `values` maps (section, key) to a value. A missing section raises YamlError,
     which is how `main()` detects the end of the source-calendar list.
+
+    The message mirrors the real YamlHelper, which distinguishes an absent section
+    ("Missing key: ...") from a setting missing inside an existing one
+    ("Missing setting: ..."). `main()` reads only the first as the end of the list, so
+    a fake that blurs them would hide the difference the loop depends on.
     """
 
-    def __init__(self, values):
+    def __init__(self, values, sections=None):
         self.values = values
+        # Sections known to exist even when a requested setting is absent. Anything
+        # else is reported as an absent section.
+        self.sections = set(sections or {section for section, _ in values})
 
     def get(self, section, key):
         if (section, key) not in self.values:
             from pyfangs.yaml import YamlError
 
-            raise YamlError(f"missing {section}.{key}")
+            if section in self.sections:
+                raise YamlError(f"Missing setting: {key!r}")
+            raise YamlError(f"Missing key: {section!r}")
         return self.values[(section, key)]
 
 

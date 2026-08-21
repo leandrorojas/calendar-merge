@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from pyfangs.yaml import YamlError
+from pyfangs.yaml import YamlHelper as RealYamlHelper
 
 import merge
 from tests.conftest import (
@@ -722,11 +723,42 @@ class FlowSpy:
             if index in self.fail_on:
                 raise self.fail_on[index]
             if not self.never_ends and index >= self.source_count:
-                raise YamlError(f"no section {index}")
+                raise YamlError(f"Missing key: {merge.YAML_SECTION_SOURCE_CALENDAR.format(index=index)!r}")
             self.processed.append(index)
 
         monkeypatch.setattr(merge, "_process_source_calendar", fake_process)
         return self
+
+
+class TestYamlErrorShapes:
+    """Pins the pyfangs messages `main()` uses to tell the two cases apart.
+
+    `_source_section_is_absent` reads the message text, because `YamlHelper.get` raises
+    the same type for an absent section and a missing setting inside an existing one.
+    Asserted against the real helper, not a fake: if pyfangs changes its wording, this
+    fails loudly instead of silently restoring the skip-every-later-calendar bug.
+    """
+
+    def build(self, tmp_path, body):
+        config = tmp_path / "config.yaml"
+        config.write_text(body)
+        return RealYamlHelper(config)
+
+    def test_an_absent_section_is_recognised(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  source: vf\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-9", "source")
+
+        assert merge._source_section_is_absent(excinfo.value)
+
+    def test_a_missing_setting_is_not_an_absent_section(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  tag: T\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert not merge._source_section_is_absent(excinfo.value)
 
 
 class TestSourceCalendarIsolation:
@@ -808,6 +840,41 @@ class TestSourceCalendarIsolation:
 
         assert any("finished for today" in message for message in spy.messages)
 
+    def test_a_malformed_section_does_not_end_the_list(self, monkeypatch, tmp_path, quiet_terminal):
+        """A section that exists but omits `source` raises the same YamlError type.
+
+        Reading it as the end of the list would skip every later calendar without
+        recording anything -- the failure this whole handler exists to prevent.
+        """
+        malformed = YamlError("Missing setting: 'source'")
+        spy = FlowSpy(source_count=3, fail_on={1: malformed})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="1 of 3 source calendars failed"):
+            merge.main()
+
+        assert spy.processed == [0, 2], "the calendar after the malformed one must still sync"
+
+    def test_a_malformed_section_is_named_in_the_summary(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=2, fail_on={0: YamlError("Missing setting: 'tz'")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="source-calendar-0"):
+            merge.main()
+
+    def test_exactly_the_maximum_number_of_calendars_is_not_a_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """The bound must not reject a configuration that sits exactly on it."""
+        monkeypatch.setattr(merge, "MAX_SOURCE_CALENDARS", 3)
+        spy = FlowSpy(source_count=3)
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        merge.main()
+
+        assert spy.processed == [0, 1, 2]
+
     def test_the_loop_is_bounded(self, monkeypatch, tmp_path, quiet_terminal):
         """A fault before the section read would otherwise never terminate.
 
@@ -823,7 +890,7 @@ class TestSourceCalendarIsolation:
         spy.install(monkeypatch, tmp_path)
         monkeypatch.setattr("sys.argv", ["calendar-merge"])
 
-        with pytest.raises(RuntimeError, match="stopped after 3 indexes"):
+        with pytest.raises(RuntimeError, match="more than 3 source calendars configured"):
             merge.main()
 
         assert spy.processed == []
@@ -966,7 +1033,7 @@ class TestMain:
 
         def capture(yaml_helper, index, fs, now, skip_days, today_bod, cut_off, *args):
             if index > 0:
-                raise YamlError("done")
+                raise YamlError("Missing key: 'source-calendar-1'")
             captured.update(today_bod=today_bod, cut_off=cut_off)
             skip_seen.append(skip_days)
 

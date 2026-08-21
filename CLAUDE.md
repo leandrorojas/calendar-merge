@@ -226,6 +226,16 @@ Configuration errors are isolated too, not just transient ones. A malformed sect
 identically on every run, but aborting means the healthy calendars stop syncing until somebody
 notices, which is worse for the calendar than syncing them and naming the broken one.
 
+**A malformed section must not read as the end of the list.** `YamlHelper.get` raises the same
+type whether the section is absent or a setting inside it is missing, so a section that exists
+without `source` would otherwise terminate the loop and skip every later calendar without
+recording anything — the very failure this handling exists to prevent.
+`_source_section_is_absent` tells them apart by pyfangs' message prefix, `"Missing key:"` against
+`"Missing setting:"`. That coupling to message text is deliberate and monitored:
+`TestYamlErrorShapes` pins both forms against the **real** `YamlHelper`, so a change to pyfangs'
+wording fails the build rather than quietly restoring the skip. The fakes in `conftest.py` mirror
+both shapes for the same reason — a fake that blurred them hid the distinction entirely.
+
 `MAX_SOURCE_CALENDARS` bounds the loop. Catching per-source failures made an unbounded loop
 possible where a persistent fault *before* the section read would previously have aborted the
 run, and a hung schedule is worse than a failed one. Its test raises a `BaseException` past the

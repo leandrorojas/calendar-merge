@@ -25,7 +25,13 @@ tagged in git.
 
   `MAX_SOURCE_CALENDARS` bounds the loop: catching per-source failures made an unbounded loop
   possible where a persistent fault before the section read would previously have aborted, and a
-  hung schedule is worse than a failed one.
+  hung schedule is worse than a failed one, and the bound is strictly greater so a
+  configuration sitting exactly on it is not reported as a failure.
+
+  A section that exists but omits `source` no longer reads as the end of the list.
+  `YamlHelper.get` raises the same type for an absent section and a missing setting inside one,
+  so the malformed case previously terminated the loop and skipped every later calendar without
+  recording anything.
 
 ## [v0.1.16] — 2026-08-21
 

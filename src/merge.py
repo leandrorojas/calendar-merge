@@ -103,6 +103,10 @@ TWO_FACTOR_CODE_ATTEMPTS = 3
 # the run: a hung schedule is worse than a failed one.
 MAX_SOURCE_CALENDARS = 100
 
+# pyfangs reports an absent section and a missing setting inside an existing section
+# with different prefixes. Only the first means the source-calendar list has ended.
+YAML_MISSING_SECTION_PREFIX = "Missing key:"
+
 # pyicloud >= 2.6.5 asks Apple for a code on its own from inside authenticate().
 # Named here so the canary test fails loudly if a future release renames it.
 PYICLOUD_AUTO_2FA_METHOD = "_request_2fa_code"
@@ -1319,6 +1323,22 @@ def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int,
     return calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now
 
 
+def _source_section_is_absent(err: YamlError) -> bool:
+    """True when the section itself does not exist, rather than a setting inside it.
+
+    `main()` uses a `YamlError` from the required `source` read as its end-of-list
+    signal. But a section that *exists* and omits `source` raises the same type, so
+    treating every `YamlError` as the end silently skips every calendar after a
+    malformed one -- the exact failure this loop's error handling exists to prevent.
+
+    pyfangs distinguishes them only by message: "Missing key: '<section>'" against
+    "Missing setting: '<name>'". That coupling is deliberate and monitored --
+    `tests/test_flow.py` pins both forms against the real `YamlHelper`, so a change to
+    pyfangs' wording fails the build instead of quietly restoring the skip.
+    """
+    return str(err).startswith(YAML_MISSING_SECTION_PREFIX)
+
+
 def _process_source_calendar(
     yaml_helper: YamlHelper,
     source_index: int,
@@ -1436,8 +1456,11 @@ def main():
     source_index = 0
     failures: list[str] = []
     while True:
-        if source_index >= MAX_SOURCE_CALENDARS:
-            failures.append(f"stopped after {MAX_SOURCE_CALENDARS} indexes without reaching the end of the list")
+        if source_index > MAX_SOURCE_CALENDARS:
+            # Strictly greater, so a configuration of exactly MAX_SOURCE_CALENDARS
+            # calendars still reaches the terminating lookup at that index instead of
+            # being reported as a failure.
+            failures.append(f"more than {MAX_SOURCE_CALENDARS} source calendars configured")
             break
         try:
             _process_source_calendar(
@@ -1452,7 +1475,15 @@ def main():
                 calendar_service,
                 calendar_guid,
             )
-        except YamlError:
+        except YamlError as err:
+            if not _source_section_is_absent(err):
+                # The section exists but is malformed. Treating it as the end of the
+                # list would skip every calendar after it without recording anything.
+                section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
+                failures.append(f"{section}: {_describe_error(err)}")
+                logger.exception("source calendar %d is misconfigured", source_index)
+                source_index += 1
+                continue
             # Not a failure: this is how the loop learns there is no section at this
             # index. It must stay ahead of the handler below, which would otherwise
             # read the end of the list as a broken calendar and never terminate.
