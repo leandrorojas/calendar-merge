@@ -41,23 +41,6 @@ and `_end_of_day`, which is only worth doing if the merge ever runs somewhere el
 
 ## Operational
 
-### One source calendar's failure aborts every calendar after it
-
-`main()`'s source-calendar loop catches only `YamlError`, which it uses as the "no more
-calendars" signal. Any other exception escapes the loop, so a failure while processing
-`source-calendar-0` means `-1` and `-2` are never processed at all.
-
-This surfaced on 2026-08-20, when a single already-deleted event aborted a whole run. That
-specific cause is fixed — a 404 on delete is now treated as success — but the isolation problem
-is untouched: a genuine failure in one calendar still costs the others.
-
-**A fix would** catch per-source failures, continue to the next calendar, and report which
-sources failed. The open question is what the run should then report: a partial sync that
-alerts is honest but noisy, while one that stays quiet hides a calendar silently not syncing.
-
-**Deferred** because it needs that reporting decision, not just a `try`. Recorded so the next
-occurrence is recognised as this rather than diagnosed from scratch.
-
 ### A transient upstream outage sends one alert per run
 
 Runs are scheduled every 15 minutes and hold no state between them, so an upstream outage

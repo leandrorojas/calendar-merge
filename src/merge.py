@@ -97,6 +97,21 @@ TELEGRAM_POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 # and the alternative is aborting the whole merge until the next scheduled run.
 TWO_FACTOR_CODE_ATTEMPTS = 3
 
+# Bounds the source-calendar loop. Not a configuration limit -- the list normally ends
+# when a section is absent. This only stops a persistent fault *before* that section read
+# from looping forever, which became possible once per-source failures stopped aborting
+# the run: a hung schedule is worse than a failed one.
+MAX_SOURCE_CALENDARS = 100
+
+# YamlHelper.get re-reads config.yaml on every call and raises YamlError for six
+# distinct situations, distinguishable only by message prefix. Two are about a section;
+# the rest are about the file, and retrying those at every index cannot help.
+YAML_ABSENT_SECTION_PREFIX = "Missing key:"
+YAML_MISSING_SETTING_PREFIX = "Missing setting:"
+
+# Floor for how much of each cause survives in an aggregated alert.
+SOURCE_FAILURE_MIN_DETAIL = 30
+
 # pyicloud >= 2.6.5 asks Apple for a code on its own from inside authenticate().
 # Named here so the canary test fails loudly if a future release renames it.
 PYICLOUD_AUTO_2FA_METHOD = "_request_2fa_code"
@@ -1313,6 +1328,62 @@ def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int,
     return calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now
 
 
+class SourceConfigOutcome(Enum):
+    """What a `YamlError` from a source-calendar read actually means.
+
+    Three cases, not two. `main()` uses the required `source` read as its end-of-list
+    signal, but `YamlHelper.get` raises the same type when the section exists and omits
+    a setting, *and* when the config file itself cannot be read -- and it re-reads the
+    file on every call, so a file-level fault repeats at every index.
+    """
+
+    absent = 0
+    """No section at this index: the list has ended."""
+
+    malformed = 1
+    """The section exists but is broken: this calendar fails, the others proceed."""
+
+    unusable = 2
+    """The config file itself: every later index fails identically, so stop."""
+
+
+def _classify_source_config_error(err: YamlError) -> SourceConfigOutcome:
+    """Sort a `YamlError` into end-of-list, broken calendar, or unusable file.
+
+    pyfangs distinguishes them only by message prefix -- "Missing key: '<section>'",
+    "Missing setting: '<name>'", and four file-level forms. That coupling to message
+    text is deliberate and monitored: `TestYamlErrorShapes` pins the shapes against the
+    real `YamlHelper`, so a change to pyfangs' wording fails the build rather than
+    silently reclassifying an error.
+
+    Defaulting the unknown case to `unusable` is the safe choice: treating a file-level
+    fault as a broken section logged it once per index and reported more failures than
+    the user has calendars.
+    """
+    message = str(err)
+    if message.startswith(YAML_ABSENT_SECTION_PREFIX):
+        return SourceConfigOutcome.absent
+    if message.startswith(YAML_MISSING_SETTING_PREFIX):
+        return SourceConfigOutcome.malformed
+    return SourceConfigOutcome.unusable
+
+
+def _summarise_source_failures(failures: list[tuple[str, str]], attempted: int) -> str:
+    """One line naming every failed source, with as much of each cause as fits.
+
+    The `__main__` handler condenses the alert to `ERROR_PART_MAX_CHARS`, so a summary
+    built from unbounded per-source text loses every failure after the first -- exactly
+    the behaviour aggregating them was meant to replace. Each cause therefore gets an
+    equal share of what remains after the header and the section names, so the
+    identities always survive and only the details are trimmed.
+    """
+    header = f"{len(failures)} of {attempted} source calendars failed"
+    overhead = len(header) + 3 + sum(len(section) + 2 for section, _ in failures) + 2 * (len(failures) - 1)
+    share = max(SOURCE_FAILURE_MIN_DETAIL, (ERROR_PART_MAX_CHARS - overhead) // len(failures))
+    details = "; ".join(f"{section}: {_condense(cause, share)}" for section, cause in failures)
+    return f"{header} - {details}"
+
+
 def _process_source_calendar(
     yaml_helper: YamlHelper,
     source_index: int,
@@ -1377,16 +1448,32 @@ def _process_source_calendar(
         f"filtering events from source calendar {calendar_source} [{source_index}]...",
         one_liner=False,
     )
-    source_calendar_events = _parse_source_events(ics_calendar, skip_days, utc_today_bod, utc_cut_off_date)
+    # Guarded so a raise cannot leave the pending one-liner open. The loop in main()
+    # now continues to the next calendar, which would print its first step glued onto
+    # the unterminated line -- and every other raise site here closes its own line, so
+    # leaving these three unguarded made that claim false.
+    try:
+        source_calendar_events = _parse_source_events(ics_calendar, skip_days, utc_today_bod, utc_cut_off_date)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Unable to read events from calendar {calendar_source} [{source_index}]") from err
     term.print_done()
 
     source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
     print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
-    filtered_icloud_events = _select_source_icloud_events(icloud_events, source_tag, skip_days)
+    try:
+        filtered_icloud_events = _select_source_icloud_events(icloud_events, source_tag, skip_days)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Unable to select iCloud events for {source_tag}") from err
     term.print_done()
 
     print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
-    merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
+    try:
+        merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError(f"Unable to reconcile events for {source_tag}") from err
     if event_addition:
         for event in merge_events:
             if event.action == EventAction.add:
@@ -1401,6 +1488,92 @@ def _process_source_calendar(
 
 
 # endregion
+
+
+def _process_all_source_calendars(
+    yaml_helper: YamlHelper,
+    fs: FileSystem,
+    now: datetime,
+    skip_days: list[str],
+    utc_today_bod: datetime,
+    utc_cut_off_date: datetime,
+    icloud_events: list[MergeEvent],
+    calendar_service,
+    calendar_guid: str,
+) -> tuple[list[tuple[str, str]], int]:
+    """Process every configured source calendar.
+
+    Returns the `(section, cause)` pairs that failed and how many indexes were
+    attempted, so the caller can report the whole run at once. Nothing is raised for a
+    single calendar: one failing source must not cost the sources after it.
+    """
+    source_index = 0
+    failures: list[tuple[str, str]] = []
+    while True:
+        if source_index > MAX_SOURCE_CALENDARS:
+            # A runaway guard, not a policy limit: YamlHelper leaks TypeError rather
+            # than YamlError when the config's top level or a section's value is a
+            # list, and that repeats at every index, so without this the loop would
+            # never end. Strictly greater, so a configuration of exactly
+            # MAX_SOURCE_CALENDARS still reaches its terminating lookup rather than
+            # being reported as a failure. The wording describes what happened instead
+            # of implying a configured maximum.
+            failures.append(
+                ("configuration", f"gave up after {source_index} indexes without reaching the end of the list")
+            )
+            break
+        try:
+            _process_source_calendar(
+                yaml_helper,
+                source_index,
+                fs,
+                now,
+                skip_days,
+                utc_today_bod,
+                utc_cut_off_date,
+                icloud_events,
+                calendar_service,
+                calendar_guid,
+            )
+        except YamlError as err:
+            outcome = _classify_source_config_error(err)
+            if outcome is SourceConfigOutcome.unusable:
+                # The config file itself, not this section. YamlHelper re-reads it on
+                # every call, so continuing would hit the identical error at every
+                # index -- logging it a hundred times and reporting more failures than
+                # the user has calendars.
+                raise
+            if outcome is SourceConfigOutcome.malformed:
+                # The section exists but is broken. Treating it as the end of the list
+                # would skip every calendar after it without recording anything.
+                section = YAML_SECTION_SOURCE_CALENDAR.format(index=source_index)
+                failures.append((section, _describe_error(err)))
+                logger.exception("source calendar %d is misconfigured", source_index)
+                source_index += 1
+                continue
+            # Not a failure: this is how the loop learns there is no section at this
+            # index. It must stay ahead of the handler below, which would otherwise
+            # read the end of the list as a broken calendar and never terminate.
+            print_step(
+                TAG_CALENDAR_MERGE,
+                term.TerminalColors.yellow.value
+                + "no more source calendars to process"
+                + term.TerminalColors.reset.value,
+                one_liner=True,
+            )
+            break
+        except Exception as err:  # one calendar must not cost the calendars after it
+            # Aborting here left healthy sources holding yesterday's picture with
+            # nothing to say so: on 2026-08-20 a single already-deleted event in
+            # source 0 meant sources 1 and 2 were never processed at all.
+            #
+            # term.print_failed() is deliberately not called -- every raise site in
+            # _process_source_calendar already closed its own pending line.
+            failures.append((YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), _describe_error(err)))
+            logger.exception("source calendar %d failed", source_index)
+        source_index += 1
+
+    return failures, source_index
 
 
 def main():
@@ -1427,31 +1600,23 @@ def main():
         term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
         one_liner=True,
     )
-    source_index = 0
-    while True:
-        try:
-            _process_source_calendar(
-                yaml_helper,
-                source_index,
-                fs,
-                now,
-                skip_days,
-                utc_today_bod,
-                utc_cut_off_date,
-                icloud_events,
-                calendar_service,
-                calendar_guid,
-            )
-        except YamlError:
-            print_step(
-                TAG_CALENDAR_MERGE,
-                term.TerminalColors.yellow.value
-                + "no more source calendars to process"
-                + term.TerminalColors.reset.value,
-                one_liner=True,
-            )
-            break
-        source_index += 1
+    failures, attempted = _process_all_source_calendars(
+        yaml_helper,
+        fs,
+        now,
+        skip_days,
+        utc_today_bod,
+        utc_cut_off_date,
+        icloud_events,
+        calendar_service,
+        calendar_guid,
+    )
+
+    if failures:
+        # Raised only once every source has had its turn, so a single alert describes
+        # the whole run instead of whichever calendar happened to fail first. The
+        # __main__ handler turns this into the Telegram message.
+        raise RuntimeError(_summarise_source_failures(failures, attempted))
 
     if args.last:
         send_telegram_message("🌙 calendar-merge finished for today.")

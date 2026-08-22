@@ -4,6 +4,42 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Fixed
+
+- A source calendar's failure no longer costs the calendars after it. `main()`'s loop caught
+  only `YamlError` — its termination signal rather than error handling — so any other exception
+  escaped the loop entirely. On 2026-08-20 a single already-deleted event in `source-calendar-0`
+  meant sources 1 and 2 were never processed; they silently kept the previous run's picture while
+  one alert named only the first calendar.
+
+  Failures are now collected per source and raised once at the end, so every calendar gets its
+  turn and a single alert describes the whole run: `2 of 3 source calendars failed - ...`, each
+  with its underlying cause. The run still fails, because a partial sync is not a success, and
+  `--last` withholds "finished for today" rather than contradicting the failure alert.
+
+  Configuration errors are isolated too. A malformed section fails identically every run, but
+  aborting stops the healthy calendars from syncing until somebody notices — worse for the
+  calendar than syncing them and naming the broken one.
+
+  `MAX_SOURCE_CALENDARS` bounds the loop: catching per-source failures made an unbounded loop
+  possible where a persistent fault before the section read would previously have aborted, and a
+  hung schedule is worse than a failed one, and the bound is strictly greater so a
+  configuration sitting exactly on it is not reported as a failure.
+
+  A `YamlError` from a source read is sorted into three cases rather than two. `YamlHelper.get`
+  raises the same type for an absent section, a missing setting inside an existing one, and a
+  config file it cannot read at all — and it re-reads the file on every call. Reading the
+  malformed case as the end of the list skipped every later calendar silently; reading a
+  file-level fault as a malformed section logged it once per index and reported more failures
+  than the user has calendars.
+
+  The alert is also budgeted rather than concatenated: condensed to `ERROR_PART_MAX_CHARS` by the
+  failure handler, an unbounded summary was truncated to its first failure, which is what
+  aggregating them was meant to replace. Each cause now gets an equal share, so every failed
+  source is always named.
+
 ## [v0.1.16] — 2026-08-21
 
 ### Changed

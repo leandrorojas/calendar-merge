@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from pyfangs.yaml import YamlError
+from pyfangs.yaml import YamlHelper as RealYamlHelper
 
 import merge
 from tests.conftest import (
@@ -344,6 +345,44 @@ def process(
     return fs, service
 
 
+class TestPendingLineIsAlwaysClosed:
+    """A raise must not leave a one-liner open.
+
+    main()'s loop now continues to the next calendar, so an unterminated line gets the
+    next calendar's first step glued onto it.
+    """
+
+    def raises(self, name):
+        def boom(*args, **kwargs):
+            raise ValueError(f"{name} exploded")
+
+        return boom
+
+    def test_a_parse_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_parse_source_events", self.raises("parse"))
+
+        with pytest.raises(RuntimeError, match="Unable to read events from calendar"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+    def test_a_selection_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_select_source_icloud_events", self.raises("select"))
+
+        with pytest.raises(RuntimeError, match="Unable to select iCloud events"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+    def test_a_reconcile_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_reconcile_events", self.raises("reconcile"))
+
+        with pytest.raises(RuntimeError, match="Unable to reconcile events"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+
 class TestSyncSummaryLine:
     """The line that makes a run's effect readable without inferring it from timing."""
 
@@ -669,11 +708,28 @@ class TestProcessSourceCalendar:
 # --- main ---
 
 
+class LoopRunaway(BaseException):
+    """Raised by the spy when main()'s loop runs away.
+
+    Derived from BaseException so main()'s `except Exception` cannot swallow it: a
+    missing loop bound then fails the test immediately instead of hanging it, which
+    would otherwise hang CI rather than reporting anything.
+    """
+
+
 class FlowSpy:
     """Records main()'s calls into the helpers it orchestrates."""
 
-    def __init__(self, source_count=1):
+    def __init__(self, source_count=1, fail_on=None, never_ends=False, runaway_after=None):
         self.source_count = source_count
+        # Indexes that raise a non-YamlError, i.e. a calendar that fails rather than
+        # one that does not exist.
+        self.fail_on = dict(fail_on or {})
+        # When set, no index ever raises YamlError, so only the loop bound stops it.
+        self.never_ends = never_ends
+        # Escape hatch for that case: raises past main()'s handler after N attempts.
+        self.runaway_after = runaway_after
+        self.attempts = 0
         self.processed: list[int] = []
         self.messages: list[str] = []
 
@@ -699,12 +755,263 @@ class FlowSpy:
         monkeypatch.setattr(merge, "send_telegram_message", lambda msg, **k: self.messages.append(msg))
 
         def fake_process(yaml_helper, index, *args, **kwargs):
-            if index >= self.source_count:
-                raise YamlError(f"no section {index}")
+            self.attempts += 1
+            if self.runaway_after is not None and self.attempts > self.runaway_after:
+                raise LoopRunaway(f"loop reached {self.attempts} attempts with no bound")
+            if index in self.fail_on:
+                raise self.fail_on[index]
+            if not self.never_ends and index >= self.source_count:
+                raise YamlError(f"Missing key: {merge.YAML_SECTION_SOURCE_CALENDAR.format(index=index)!r}")
             self.processed.append(index)
 
         monkeypatch.setattr(merge, "_process_source_calendar", fake_process)
         return self
+
+
+class TestSourceFailureSummary:
+    """The alert is condensed by the __main__ handler, so the summary must fit.
+
+    Built from unbounded per-source text it lost every failure after the first --
+    the exact behaviour aggregating them was meant to replace.
+    """
+
+    LONG = (
+        "Unable to download calendar s [0] (ConnectionError: HTTPSConnectionPool("
+        "host='outlook.office365.com', port=443): Max retries exceeded (Caused by "
+        "ConnectTimeoutError('Connection to outlook.office365.com timed out.')))"
+    )
+
+    def test_every_failure_survives_the_alert(self):
+        failures = [(f"source-calendar-{index}", self.LONG) for index in range(3)]
+
+        alert = merge._describe_error(RuntimeError(merge._summarise_source_failures(failures, 3)))
+
+        for index in range(3):
+            assert f"source-calendar-{index}" in alert
+
+    def test_the_summary_fits_the_alert_budget(self):
+        failures = [(f"source-calendar-{index}", self.LONG) for index in range(5)]
+
+        summary = merge._summarise_source_failures(failures, 5)
+
+        assert len(summary) <= merge.ERROR_PART_MAX_CHARS
+
+    def test_the_count_leads_the_summary(self):
+        summary = merge._summarise_source_failures([("source-calendar-1", "boom")], 3)
+
+        assert summary.startswith("1 of 3 source calendars failed")
+
+    def test_a_short_cause_is_not_padded_or_trimmed(self):
+        summary = merge._summarise_source_failures([("source-calendar-0", "feed timed out")], 1)
+
+        assert "source-calendar-0: feed timed out" in summary
+
+
+class TestYamlErrorShapes:
+    """Pins the pyfangs messages `main()` uses to tell the two cases apart.
+
+    `_source_section_is_absent` reads the message text, because `YamlHelper.get` raises
+    the same type for an absent section and a missing setting inside an existing one.
+    Asserted against the real helper, not a fake: if pyfangs changes its wording, this
+    fails loudly instead of silently restoring the skip-every-later-calendar bug.
+    """
+
+    def build(self, tmp_path, body):
+        config = tmp_path / "config.yaml"
+        config.write_text(body)
+        return RealYamlHelper(config)
+
+    def test_an_absent_section_ends_the_list(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  source: vf\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-9", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.absent
+
+    def test_a_missing_setting_is_a_broken_calendar(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  tag: T\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.malformed
+
+    def test_an_unreadable_file_is_neither(self, tmp_path):
+        """A file-level fault repeats at every index, so it must not look per-section."""
+        helper = RealYamlHelper(tmp_path / "absent.yaml")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
+
+    def test_an_empty_file_is_neither(self, tmp_path):
+        helper = self.build(tmp_path, "")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
+
+    def test_unparseable_yaml_is_neither(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  - [unclosed\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
+
+
+class TestSourceCalendarIsolation:
+    """One calendar's failure must not cost the calendars after it.
+
+    Reproduces 2026-08-20: an already-deleted event in source 0 aborted the run, so
+    sources 1 and 2 were never processed and silently kept yesterday's picture.
+    """
+
+    def test_a_failing_source_does_not_stop_the_others(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=3, fail_on={0: RuntimeError("Unable to download calendar vf [0]")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="source calendars failed"):
+            merge.main()
+
+        assert spy.processed == [1, 2]
+
+    def test_the_run_still_fails(self, monkeypatch, tmp_path, quiet_terminal):
+        """A partial sync is not a success; the existing alert must still fire."""
+        FlowSpy(source_count=3, fail_on={1: RuntimeError("boom")}).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="1 of 3 source calendars failed"):
+            merge.main()
+
+    def test_one_alert_summarises_every_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """Alert once with a summary, rather than once per failed source."""
+        FlowSpy(
+            source_count=3,
+            fail_on={0: RuntimeError("first broke"), 2: RuntimeError("third broke")},
+        ).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError) as excinfo:
+            merge.main()
+
+        message = str(excinfo.value)
+        assert "2 of 3 source calendars failed" in message
+        assert "source-calendar-0" in message
+        assert "source-calendar-2" in message
+
+    def test_the_summary_carries_each_underlying_cause(self, monkeypatch, tmp_path, quiet_terminal):
+        cause = ConnectionError("feed timed out")
+        wrapper = RuntimeError("Unable to download calendar vf [0]")
+        wrapper.__cause__ = cause
+        FlowSpy(source_count=2, fail_on={0: wrapper}).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="ConnectionError: feed timed out"):
+            merge.main()
+
+    def test_a_clean_run_raises_nothing(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=3).install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        merge.main()
+
+        assert spy.processed == [0, 1, 2]
+
+    def test_the_end_of_day_message_is_withheld_after_a_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """Announcing "finished for today" alongside a failure alert contradicts it."""
+        spy = FlowSpy(source_count=2, fail_on={0: RuntimeError("boom")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge", "--last"])
+
+        with pytest.raises(RuntimeError):
+            merge.main()
+
+        assert not any("finished for today" in message for message in spy.messages)
+
+    def test_the_end_of_day_message_still_sends_on_a_clean_run(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=2)
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge", "--last"])
+
+        merge.main()
+
+        assert any("finished for today" in message for message in spy.messages)
+
+    def test_an_unusable_config_file_stops_the_run_at_once(self, monkeypatch, tmp_path, quiet_terminal):
+        """YamlHelper re-reads the file every call, so a file fault repeats per index.
+
+        Recording it as a broken section logged it once per index and reported more
+        failures than the user has calendars.
+        """
+        unusable = YamlError("File not found: /nowhere/config.yaml")
+        spy = FlowSpy(source_count=3, fail_on=dict.fromkeys(range(3), unusable))
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(YamlError, match="File not found"):
+            merge.main()
+
+        assert spy.attempts == 1, "must stop at the first index, not retry every one"
+
+    def test_a_malformed_section_does_not_end_the_list(self, monkeypatch, tmp_path, quiet_terminal):
+        """A section that exists but omits `source` raises the same YamlError type.
+
+        Reading it as the end of the list would skip every later calendar without
+        recording anything -- the failure this whole handler exists to prevent.
+        """
+        malformed = YamlError("Missing setting: 'source'")
+        spy = FlowSpy(source_count=3, fail_on={1: malformed})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="1 of 3 source calendars failed"):
+            merge.main()
+
+        assert spy.processed == [0, 2], "the calendar after the malformed one must still sync"
+
+    def test_a_malformed_section_is_named_in_the_summary(self, monkeypatch, tmp_path, quiet_terminal):
+        spy = FlowSpy(source_count=2, fail_on={0: YamlError("Missing setting: 'tz'")})
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="source-calendar-0"):
+            merge.main()
+
+    def test_exactly_the_maximum_number_of_calendars_is_not_a_failure(self, monkeypatch, tmp_path, quiet_terminal):
+        """The bound must not reject a configuration that sits exactly on it."""
+        monkeypatch.setattr(merge, "MAX_SOURCE_CALENDARS", 3)
+        spy = FlowSpy(source_count=3)
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        merge.main()
+
+        assert spy.processed == [0, 1, 2]
+
+    def test_the_loop_is_bounded(self, monkeypatch, tmp_path, quiet_terminal):
+        """A fault before the section read would otherwise never terminate.
+
+        Catching per-source failures made that possible, and a hung schedule is worse
+        than a failed one.
+        """
+        monkeypatch.setattr(merge, "MAX_SOURCE_CALENDARS", 3)
+        spy = FlowSpy(
+            never_ends=True,
+            fail_on=dict.fromkeys(range(50), RuntimeError("always broken")),
+            runaway_after=20,
+        )
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(RuntimeError, match="gave up after 4 indexes"):
+            merge.main()
+
+        assert spy.processed == []
 
 
 class TestMain:
@@ -844,7 +1151,7 @@ class TestMain:
 
         def capture(yaml_helper, index, fs, now, skip_days, today_bod, cut_off, *args):
             if index > 0:
-                raise YamlError("done")
+                raise YamlError("Missing key: 'source-calendar-1'")
             captured.update(today_bod=today_bod, cut_off=cut_off)
             skip_seen.append(skip_days)
 
