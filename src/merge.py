@@ -1490,30 +1490,23 @@ def _process_source_calendar(
 # endregion
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
-    parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
-    parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
-    args = parser.parse_args()
+def _process_all_source_calendars(
+    yaml_helper: YamlHelper,
+    fs: FileSystem,
+    now: datetime,
+    skip_days: list[str],
+    utc_today_bod: datetime,
+    utc_cut_off_date: datetime,
+    icloud_events: list[MergeEvent],
+    calendar_service,
+    calendar_guid: str,
+) -> tuple[list[tuple[str, str]], int]:
+    """Process every configured source calendar.
 
-    yaml_helper, future_event_days, skip_days, fs = _load_config()
-
-    if args.first:
-        send_telegram_message("☀️ calendar-merge started for today.")
-
-    icloud_service = _authenticate_icloud()
-    calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now = _load_icloud_events(
-        icloud_service, future_event_days, skip_days
-    )
-
-    utc_today_bod = convert_to_utc(today_bod)
-    utc_cut_off_date = convert_to_utc(cut_off_date)
-
-    print_step(
-        TAG_CALENDAR_MERGE,
-        term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
-        one_liner=True,
-    )
+    Returns the `(section, cause)` pairs that failed and how many indexes were
+    attempted, so the caller can report the whole run at once. Nothing is raised for a
+    single calendar: one failing source must not cost the sources after it.
+    """
     source_index = 0
     failures: list[tuple[str, str]] = []
     while True:
@@ -1580,11 +1573,50 @@ def main():
             logger.exception("source calendar %d failed", source_index)
         source_index += 1
 
+    return failures, source_index
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
+    parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
+    parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
+    args = parser.parse_args()
+
+    yaml_helper, future_event_days, skip_days, fs = _load_config()
+
+    if args.first:
+        send_telegram_message("☀️ calendar-merge started for today.")
+
+    icloud_service = _authenticate_icloud()
+    calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now = _load_icloud_events(
+        icloud_service, future_event_days, skip_days
+    )
+
+    utc_today_bod = convert_to_utc(today_bod)
+    utc_cut_off_date = convert_to_utc(cut_off_date)
+
+    print_step(
+        TAG_CALENDAR_MERGE,
+        term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
+        one_liner=True,
+    )
+    failures, attempted = _process_all_source_calendars(
+        yaml_helper,
+        fs,
+        now,
+        skip_days,
+        utc_today_bod,
+        utc_cut_off_date,
+        icloud_events,
+        calendar_service,
+        calendar_guid,
+    )
+
     if failures:
         # Raised only once every source has had its turn, so a single alert describes
         # the whole run instead of whichever calendar happened to fail first. The
         # __main__ handler turns this into the Telegram message.
-        raise RuntimeError(_summarise_source_failures(failures, source_index))
+        raise RuntimeError(_summarise_source_failures(failures, attempted))
 
     if args.last:
         send_telegram_message("🌙 calendar-merge finished for today.")

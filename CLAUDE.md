@@ -208,7 +208,7 @@ means "changed" rather than "attempted"; counting before would report a failed a
 An earlier note here called that an equivalent mutant, which was true only while a failure
 skipped the report entirely — it is now killed by two tests.
 
-**One source calendar's failure does not cost the calendars after it.** `main()`'s loop
+**One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception
 is recorded against its source and the loop continues.
