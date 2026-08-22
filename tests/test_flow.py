@@ -345,6 +345,44 @@ def process(
     return fs, service
 
 
+class TestPendingLineIsAlwaysClosed:
+    """A raise must not leave a one-liner open.
+
+    main()'s loop now continues to the next calendar, so an unterminated line gets the
+    next calendar's first step glued onto it.
+    """
+
+    def raises(self, name):
+        def boom(*args, **kwargs):
+            raise ValueError(f"{name} exploded")
+
+        return boom
+
+    def test_a_parse_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_parse_source_events", self.raises("parse"))
+
+        with pytest.raises(RuntimeError, match="Unable to read events from calendar"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+    def test_a_selection_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_select_source_icloud_events", self.raises("select"))
+
+        with pytest.raises(RuntimeError, match="Unable to select iCloud events"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+    def test_a_reconcile_failure_closes_its_line(self, monkeypatch, tmp_path, quiet_terminal):
+        monkeypatch.setattr(merge, "_reconcile_events", self.raises("reconcile"))
+
+        with pytest.raises(RuntimeError, match="Unable to reconcile events"):
+            process(monkeypatch, tmp_path)
+
+        assert "<failed>" in quiet_terminal
+
+
 class TestSyncSummaryLine:
     """The line that makes a run's effect readable without inferring it from timing."""
 
@@ -730,6 +768,45 @@ class FlowSpy:
         return self
 
 
+class TestSourceFailureSummary:
+    """The alert is condensed by the __main__ handler, so the summary must fit.
+
+    Built from unbounded per-source text it lost every failure after the first --
+    the exact behaviour aggregating them was meant to replace.
+    """
+
+    LONG = (
+        "Unable to download calendar s [0] (ConnectionError: HTTPSConnectionPool("
+        "host='outlook.office365.com', port=443): Max retries exceeded (Caused by "
+        "ConnectTimeoutError('Connection to outlook.office365.com timed out.')))"
+    )
+
+    def test_every_failure_survives_the_alert(self):
+        failures = [(f"source-calendar-{index}", self.LONG) for index in range(3)]
+
+        alert = merge._describe_error(RuntimeError(merge._summarise_source_failures(failures, 3)))
+
+        for index in range(3):
+            assert f"source-calendar-{index}" in alert
+
+    def test_the_summary_fits_the_alert_budget(self):
+        failures = [(f"source-calendar-{index}", self.LONG) for index in range(5)]
+
+        summary = merge._summarise_source_failures(failures, 5)
+
+        assert len(summary) <= merge.ERROR_PART_MAX_CHARS
+
+    def test_the_count_leads_the_summary(self):
+        summary = merge._summarise_source_failures([("source-calendar-1", "boom")], 3)
+
+        assert summary.startswith("1 of 3 source calendars failed")
+
+    def test_a_short_cause_is_not_padded_or_trimmed(self):
+        summary = merge._summarise_source_failures([("source-calendar-0", "feed timed out")], 1)
+
+        assert "source-calendar-0: feed timed out" in summary
+
+
 class TestYamlErrorShapes:
     """Pins the pyfangs messages `main()` uses to tell the two cases apart.
 
@@ -744,21 +821,46 @@ class TestYamlErrorShapes:
         config.write_text(body)
         return RealYamlHelper(config)
 
-    def test_an_absent_section_is_recognised(self, tmp_path):
+    def test_an_absent_section_ends_the_list(self, tmp_path):
         helper = self.build(tmp_path, "source-calendar-0:\n  source: vf\n")
 
         with pytest.raises(YamlError) as excinfo:
             helper.get("source-calendar-9", "source")
 
-        assert merge._source_section_is_absent(excinfo.value)
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.absent
 
-    def test_a_missing_setting_is_not_an_absent_section(self, tmp_path):
+    def test_a_missing_setting_is_a_broken_calendar(self, tmp_path):
         helper = self.build(tmp_path, "source-calendar-0:\n  tag: T\n")
 
         with pytest.raises(YamlError) as excinfo:
             helper.get("source-calendar-0", "source")
 
-        assert not merge._source_section_is_absent(excinfo.value)
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.malformed
+
+    def test_an_unreadable_file_is_neither(self, tmp_path):
+        """A file-level fault repeats at every index, so it must not look per-section."""
+        helper = RealYamlHelper(tmp_path / "absent.yaml")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
+
+    def test_an_empty_file_is_neither(self, tmp_path):
+        helper = self.build(tmp_path, "")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
+
+    def test_unparseable_yaml_is_neither(self, tmp_path):
+        helper = self.build(tmp_path, "source-calendar-0:\n  - [unclosed\n")
+
+        with pytest.raises(YamlError) as excinfo:
+            helper.get("source-calendar-0", "source")
+
+        assert merge._classify_source_config_error(excinfo.value) is merge.SourceConfigOutcome.unusable
 
 
 class TestSourceCalendarIsolation:
@@ -840,6 +942,22 @@ class TestSourceCalendarIsolation:
 
         assert any("finished for today" in message for message in spy.messages)
 
+    def test_an_unusable_config_file_stops_the_run_at_once(self, monkeypatch, tmp_path, quiet_terminal):
+        """YamlHelper re-reads the file every call, so a file fault repeats per index.
+
+        Recording it as a broken section logged it once per index and reported more
+        failures than the user has calendars.
+        """
+        unusable = YamlError("File not found: /nowhere/config.yaml")
+        spy = FlowSpy(source_count=3, fail_on=dict.fromkeys(range(3), unusable))
+        spy.install(monkeypatch, tmp_path)
+        monkeypatch.setattr("sys.argv", ["calendar-merge"])
+
+        with pytest.raises(YamlError, match="File not found"):
+            merge.main()
+
+        assert spy.attempts == 1, "must stop at the first index, not retry every one"
+
     def test_a_malformed_section_does_not_end_the_list(self, monkeypatch, tmp_path, quiet_terminal):
         """A section that exists but omits `source` raises the same YamlError type.
 
@@ -890,7 +1008,7 @@ class TestSourceCalendarIsolation:
         spy.install(monkeypatch, tmp_path)
         monkeypatch.setattr("sys.argv", ["calendar-merge"])
 
-        with pytest.raises(RuntimeError, match="more than 3 source calendars configured"):
+        with pytest.raises(RuntimeError, match="gave up after 4 indexes"):
             merge.main()
 
         assert spy.processed == []

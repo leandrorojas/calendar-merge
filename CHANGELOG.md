@@ -28,10 +28,17 @@ tagged in git.
   hung schedule is worse than a failed one, and the bound is strictly greater so a
   configuration sitting exactly on it is not reported as a failure.
 
-  A section that exists but omits `source` no longer reads as the end of the list.
-  `YamlHelper.get` raises the same type for an absent section and a missing setting inside one,
-  so the malformed case previously terminated the loop and skipped every later calendar without
-  recording anything.
+  A `YamlError` from a source read is sorted into three cases rather than two. `YamlHelper.get`
+  raises the same type for an absent section, a missing setting inside an existing one, and a
+  config file it cannot read at all — and it re-reads the file on every call. Reading the
+  malformed case as the end of the list skipped every later calendar silently; reading a
+  file-level fault as a malformed section logged it once per index and reported more failures
+  than the user has calendars.
+
+  The alert is also budgeted rather than concatenated: condensed to `ERROR_PART_MAX_CHARS` by the
+  failure handler, an unbounded summary was truncated to its first failure, which is what
+  aggregating them was meant to replace. Each cause now gets an equal share, so every failed
+  source is always named.
 
 ## [v0.1.16] — 2026-08-21
 

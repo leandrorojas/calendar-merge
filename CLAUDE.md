@@ -226,15 +226,35 @@ Configuration errors are isolated too, not just transient ones. A malformed sect
 identically on every run, but aborting means the healthy calendars stop syncing until somebody
 notices, which is worse for the calendar than syncing them and naming the broken one.
 
-**A malformed section must not read as the end of the list.** `YamlHelper.get` raises the same
-type whether the section is absent or a setting inside it is missing, so a section that exists
-without `source` would otherwise terminate the loop and skip every later calendar without
-recording anything — the very failure this handling exists to prevent.
-`_source_section_is_absent` tells them apart by pyfangs' message prefix, `"Missing key:"` against
-`"Missing setting:"`. That coupling to message text is deliberate and monitored:
-`TestYamlErrorShapes` pins both forms against the **real** `YamlHelper`, so a change to pyfangs'
-wording fails the build rather than quietly restoring the skip. The fakes in `conftest.py` mirror
-both shapes for the same reason — a fake that blurred them hid the distinction entirely.
+**A `YamlError` from a source read means one of three things, not two.**
+`YamlHelper.get` re-reads `config.yaml` on every call and raises the same type when the section is
+absent, when a setting inside an existing section is missing, and when the file itself cannot be
+read. `_classify_source_config_error` sorts them by pyfangs' message prefix into
+`SourceConfigOutcome.absent` (the list has ended), `malformed` (this calendar fails, the rest
+proceed) and `unusable` (the file — stop at once).
+
+Each mapping matters. Reading a **malformed** section as the end of the list skips every calendar
+after it without recording anything, the very failure this handling exists to prevent. Reading an
+**unusable** file as a malformed section logs the identical error once per index and reports more
+failures than the user has calendars, because every later index re-reads the same broken file. The
+unknown case defaults to `unusable`, which stops rather than retries.
+
+That coupling to message text is deliberate and monitored: `TestYamlErrorShapes` pins all three
+against the **real** `YamlHelper`, so a change to pyfangs' wording fails the build rather than
+silently reclassifying. The fakes in `conftest.py` mirror the shapes for the same reason — fakes
+that blurred them hid the distinction entirely, and fixing them surfaced thirteen failures at once.
+
+**The aggregated alert is budgeted, not just concatenated.** The `__main__` handler condenses it to
+`ERROR_PART_MAX_CHARS`, so a summary built from unbounded per-source text is truncated to its first
+failure — which is what aggregating them was meant to replace. `_summarise_source_failures` gives
+each cause an equal share of what remains after the header and the section names, so the identities
+always survive and only the details are trimmed.
+
+**`MAX_SOURCE_CALENDARS` is a runaway guard, not a policy limit.** `YamlHelper` leaks `TypeError`
+rather than `YamlError` when the config's top level, or a section's value, is a list — and that
+repeats at every index, so the loop would never end. The bound is strictly greater so a
+configuration of exactly that many calendars still reaches its terminating lookup, and its message
+says what happened rather than implying a configured maximum.
 
 `MAX_SOURCE_CALENDARS` bounds the loop. Catching per-source failures made an unbounded loop
 possible where a persistent fault *before* the section read would previously have aborted the
