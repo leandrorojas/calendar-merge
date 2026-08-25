@@ -40,6 +40,23 @@ tagged in git.
   aggregating them was meant to replace. Each cause now gets an equal share, so every failed
   source is always named.
 
+## [Unreleased]
+
+### Added
+
+- Repeated failure alerts are suppressed. Runs are independent processes fifteen minutes apart
+  with no memory of each other, so a single upstream outage sent one identical alert per run —
+  three on 2026-08-18, and up to forty-one across a full weekday schedule.
+
+  A first failure alerts, the same cause repeating does not, and `failure_alert_every` in
+  `config.yaml` sets how many further failed runs pass before the alert repeats, so a long
+  outage does not go indefinitely quiet. Recovery is announced, because otherwise silence would
+  mean either "working" or "still broken and no longer saying so".
+
+  Every decision fails open: unreadable or unwritable state alerts rather than suppresses, and a
+  cause that varies between runs re-alerts. The state lives in `logs/failure-state.json`,
+  overridable with `CALENDAR_MERGE_STATE_FILE`.
+
 ## [v0.1.16] — 2026-08-21
 
 ### Changed

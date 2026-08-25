@@ -263,6 +263,10 @@ v0.1.12, but duplicate creation is not similarly guarded — the schedule is the
 ## Notes
 
 - Keep your machine timezone aligned with `America/Argentina/Buenos_Aires` if you rely on the current template assumptions.
+- **Repeated failure alerts are suppressed.** A first failure notifies, the same failure
+  repeating does not, and recovery is announced. `failure_alert_every` in `config.yaml` controls
+  how many further failed runs pass before the alert repeats — with a 15-minute schedule the
+  default of `4` reminds hourly, and `0` alerts only on the first failure and on recovery.
 - The script downloads temporary `.ics` files under the system temp directory while processing.
 - If you remove a calendar URL or `source-calendar-N` block, clean up the numbering so the indexes stay consecutive starting from `0`.
 - Known gaps that are deliberately unfixed are recorded in [BACKLOG.md](BACKLOG.md), each with

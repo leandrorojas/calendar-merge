@@ -5,6 +5,10 @@ config:
   # Global: how many non-skipped days ahead to sync. Not overridable per source,
   # and it is counted using the global skip_days above.
   future_events_days: 5
+  # After the first failure alert, how many further failed runs before it repeats.
+  # Runs hold no state between them, so without this a single outage alerts once per
+  # run. 0 alerts only on the first failure and on recovery.
+  failure_alert_every: 4
 
 # One block per source calendar. Indexes must start at 0 and be consecutive,
 # and each block needs a matching CALENDAR_URL_<index> entry in .env.
