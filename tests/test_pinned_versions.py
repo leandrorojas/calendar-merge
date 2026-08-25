@@ -6,7 +6,14 @@ happened silently on the 0.15.10 to 0.16.3 bump fails the build instead.
 """
 
 import pytest
-from pinned_versions import PINNED_TOOLS, VersionError, check, locked_version, pre_commit_version
+from pinned_versions import (
+    PINNED_TOOLS,
+    VersionError,
+    check,
+    locked_version,
+    pre_commit_version,
+    unguarded_repositories,
+)
 
 LOCK = """
 [[package]]
@@ -103,7 +110,10 @@ class TestVersionValidation:
 
     def test_rejects_a_hostile_pre_commit_rev(self, tmp_path):
         config = tmp_path / ".pre-commit-config.yaml"
-        config.write_text("repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n    rev: v0.1;id\n")
+        config.write_text(
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.1;id\n    hooks:\n      - id: ruff-check\n"
+        )
 
         with pytest.raises(VersionError, match="not a valid version"):
             pre_commit_version("ruff-pre-commit", config)
@@ -126,8 +136,12 @@ class TestPreCommitVersion:
 repos:
   - repo: https://github.com/other/hook
     rev: v9.9.9
+    hooks:
+      - id: other
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.3
+    hooks:
+      - id: ruff-check
 """
         _, config = write(tmp_path, pre_commit=config_text)
 
@@ -137,10 +151,13 @@ repos:
         with pytest.raises(VersionError, match="not found"):
             pre_commit_version("ruff-pre-commit", tmp_path / "absent.yaml")
 
-    def test_reports_no_ruff_hook(self, tmp_path):
-        _, config = write(tmp_path, pre_commit="repos:\n  - repo: https://github.com/other/hook\n    rev: v1.0.0\n")
+    def test_reports_no_ruff_repo(self, tmp_path):
+        _, config = write(
+            tmp_path,
+            pre_commit="repos:\n  - repo: https://github.com/other/hook\n    rev: v1.0.0\n    hooks:\n      - id: x\n",
+        )
 
-        with pytest.raises(VersionError, match="no ruff-pre-commit rev"):
+        with pytest.raises(VersionError, match="no ruff-pre-commit repo"):
             pre_commit_version("ruff-pre-commit", config)
 
 
@@ -181,9 +198,61 @@ class TestCheck:
         with pytest.raises(VersionError, match=r"bump the rev to v0\.16\.3"):
             check(lock, config)
 
-    def test_every_pinned_tool_is_covered(self):
-        """Guards the table itself: a hook added without an entry is unguarded."""
-        assert set(PINNED_TOOLS) == {"ruff", "mypy"}
+    def test_no_repository_is_left_unguarded(self):
+        """The table is only a guarantee if something checks the table is complete.
+
+        Asserting its literal contents only catches removals. A hook added later
+        without an entry is exactly the drift this guard exists to prevent, and would
+        otherwise leave every test and `--check` green.
+        """
+        assert unguarded_repositories() == set()
+
+    def test_an_unlisted_repository_is_reported(self, tmp_path):
+        config = tmp_path / ".pre-commit-config.yaml"
+        config.write_text(
+            PRE_COMMIT + "  - repo: https://github.com/someone/new-linter\n    rev: v1.0.0\n    hooks:\n      - id: x\n"
+        )
+
+        assert unguarded_repositories(config) == {"new-linter"}
+
+    def test_an_empty_table_is_an_error(self, tmp_path, monkeypatch):
+        """A guard that verifies nothing must not report success."""
+        lock, config = write(tmp_path)
+        monkeypatch.setattr("pinned_versions.PINNED_TOOLS", {})
+
+        with pytest.raises(VersionError, match="would verify nothing"):
+            check(lock, config)
+
+    def test_a_rev_without_a_hook_is_rejected(self, tmp_path):
+        """A repo whose hooks list is empty runs nothing, so agreeing proves nothing."""
+        lock, config = write(tmp_path, pre_commit=PRE_COMMIT.replace("      - id: ruff-check\n", ""))
+
+        with pytest.raises(VersionError, match="declares no hook"):
+            check(lock, config)
+
+    def test_a_similarly_named_repository_is_not_mistaken(self, tmp_path):
+        """`ruff-pre-commit-nightly` must not be read as `ruff-pre-commit`."""
+        nightly = (
+            "repos:\n  - repo: https://github.com/x/ruff-pre-commit-nightly\n"
+            "    rev: v9.9.9\n    hooks:\n      - id: x\n"
+        )
+        lock, config = write(tmp_path, pre_commit=nightly + PRE_COMMIT.split("repos:\n", 1)[1])
+
+        assert check(lock, config)["ruff"] == "0.16.3"
+
+    def test_drift_is_reported_even_when_a_later_tool_is_missing(self, tmp_path):
+        """A failed lookup must not discard drift already found."""
+        only_ruff = (
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.15.10\n    hooks:\n      - id: ruff-check\n"
+        )
+        lock, config = write(tmp_path, pre_commit=only_ruff)
+
+        with pytest.raises(VersionError) as excinfo:
+            check(lock, config)
+
+        assert "0.15.10" in str(excinfo.value)
+        assert "mypy" in str(excinfo.value)
 
 
 class TestRealRepository:

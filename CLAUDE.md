@@ -56,8 +56,17 @@ The same hole was open for mypy and went unnoticed longer, because only ruff was
 hook pinned 1.20.1 while the lockfile resolved 2.3.1, a major version apart. A pre-commit run
 and CI could therefore disagree about whether the code type-checks at all — in either
 direction, a local pass that fails CI or a real type error accepted locally. Adding a tool to
-`.pre-commit-config.yaml` without adding it to `PINNED_TOOLS` leaves it unguarded, so a test
-asserts the table's contents rather than trusting it. `check()` evaluates every tool before
+`.pre-commit-config.yaml` without adding it to `PINNED_TOOLS` would leave it unguarded, so
+`unguarded_repositories()` compares the config against `PINNED_TOOLS` and `UNGUARDED_REPOS`
+and a test asserts nothing is missing. Asserting the table's literal contents instead would
+only catch removals, which is the direction that cannot silently drift.
+
+The config is parsed **by block**, not matched with one pattern spanning repository name to
+`rev:`. Such a pattern reads whatever lies between them, so a comment naming a repository, a
+reordered `hooks:` key, or `ruff-pre-commit-nightly` listed first each silently change which
+version is checked. A repository is also required to declare at least one hook: one pinned at
+the right version with an empty `hooks:` list runs nothing, so agreeing with the lockfile
+proves nothing — the same vacuous-pass failure the wheel-layout check had. `check()` evaluates every tool before
 raising, so a bump moving two does not hide one behind the other. The script imports only the standard library, so the step runs it with plain `python` rather
 than through `uv run`: there is no environment to resolve and nothing to build, which keeps
 the lint job free of the private dependency and its deploy key. Routing it through uv meant

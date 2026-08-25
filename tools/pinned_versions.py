@@ -37,6 +37,13 @@ PINNED_TOOLS = {
     "mypy": "mirrors-mypy",
 }
 
+# Repositories that deliberately have no lockfile counterpart, with the reason. Every
+# repo in the config must appear here or in PINNED_TOOLS, so a hook added later cannot
+# sit unguarded and unnoticed -- a test asserts exactly that.
+UNGUARDED_REPOS = {
+    "pre-commit-hooks": "not a Python package; nothing in uv.lock to track",
+}
+
 # The result is interpolated into a shell command in CI, and uv.lock is a checked-in
 # file a fork pull request can edit. Anything outside this shape -- a quote, a
 # semicolon, whitespace, a newline -- is rejected rather than passed along.
@@ -45,22 +52,39 @@ PINNED_TOOLS = {
 # [0-9]. Do not drop it when simplifying.
 SAFE_VERSION = re.compile(r"\A\d[\dA-Za-z.+\-]*\Z", re.ASCII)
 
+# A `- repo:` line, capturing the trailing path segment. Anchored on the key so a
+# comment mentioning a repository cannot be read as one, and on `/` plus end-of-token
+# so `ruff-pre-commit-nightly` is not mistaken for `ruff-pre-commit`.
+REPO_LINE = re.compile(r"^[ \t]*-[ \t]*repo:[ \t]*(?P<url>\S+)[ \t]*$")
+REV_LINE = re.compile(r"^[ \t]*rev:[ \t]*v?(?P<version>\S+)[ \t]*$")
+HOOK_ID_LINE = re.compile(r"^[ \t]*-[ \t]*id:[ \t]*(?P<id>\S+)[ \t]*$")
+
 
 class VersionError(Exception):
     """A pinned version is missing, inconsistent, or not a version at all."""
 
 
-def _rev_pattern(repository: str) -> re.Pattern[str]:
-    r"""Locate the rev on one pre-commit repository only.
+def _repo_blocks(config: pathlib.Path) -> dict[str, list[str]]:
+    """Split the pre-commit config into one line-list per repository.
 
-    Anchored to the repository name so an unrelated hook's rev is never mistaken for
-    it. Captures the whole token rather than a restricted character class: validation
-    belongs to SAFE_VERSION alone, or a malformed rev is silently truncated to its
-    valid prefix and reported as drift instead of as malformed. Each part matches a
-    disjoint character set, so any input has exactly one match path and there is no
-    backtracking -- `\s*\n\s*` would be ambiguous, since \s includes the newline.
+    Parsed by block rather than matched with a single pattern: a regex spanning from a
+    repository name to the next `rev:` reads whatever lies between them, so a comment,
+    a reordered `hooks:` key, or a similarly named repository silently changes which
+    version is checked.
     """
-    return re.compile(rf"{re.escape(repository)}[^\n]*\n[ \t]*rev:[ \t]*v?(?P<version>\S+)")
+    if not config.is_file():
+        raise VersionError(f"{config} not found")
+    blocks: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in config.read_text().splitlines():
+        match = REPO_LINE.match(line)
+        if match:
+            current = match.group("url").rstrip("/").rsplit("/", 1)[-1]
+            blocks[current] = []
+            continue
+        if current is not None:
+            blocks[current].append(line)
+    return blocks
 
 
 def _validated(version: str, source: pathlib.Path) -> str:
@@ -84,36 +108,66 @@ def locked_version(package: str, lockfile: pathlib.Path = LOCKFILE) -> str:
 
 
 def pre_commit_version(repository: str, config: pathlib.Path = PRE_COMMIT) -> str:
-    """Return the version pinned by one pre-commit repository."""
-    if not config.is_file():
-        raise VersionError(f"{config} not found")
-    match = _rev_pattern(repository).search(config.read_text())
-    if match is None:
-        raise VersionError(f"no {repository} rev found in {config}")
-    return _validated(match.group("version"), config)
+    """Return the version pinned by one pre-commit repository.
+
+    Also requires the block to declare at least one hook. A repository pinned at the
+    right version whose `hooks:` list is empty, or whose only `- id:` is commented out,
+    runs nothing -- so agreeing with the lockfile would prove nothing.
+    """
+    blocks = _repo_blocks(config)
+    if repository not in blocks:
+        raise VersionError(f"no {repository} repo found in {config}")
+    lines = blocks[repository]
+    revisions = [REV_LINE.match(line) for line in lines]
+    found = [match for match in revisions if match]
+    if not found:
+        raise VersionError(f"{repository} in {config} has no rev")
+    if not any(HOOK_ID_LINE.match(line) for line in lines):
+        raise VersionError(f"{repository} in {config} pins a rev but declares no hook, so nothing runs")
+    return _validated(found[0].group("version"), config)
 
 
 def check(lockfile: pathlib.Path = LOCKFILE, config: pathlib.Path = PRE_COMMIT) -> dict[str, str]:
     """Return every locked version, or raise when a pre-commit rev disagrees.
 
-    Every tool is checked before raising, so one bump does not hide another: a
-    Dependabot PR moving both ruff and mypy should report both, not whichever the
-    dictionary happened to order first.
+    Every tool is evaluated before raising -- including ones whose own lookup fails --
+    so a bump moving two does not hide one behind the other, and a missing repo does
+    not discard drift already found.
+
+    An empty table is itself an error: a guard that checks nothing must not report
+    success, which is the failure mode that made the wheel-layout check meaningless
+    before it was hardened.
     """
+    if not PINNED_TOOLS:
+        raise VersionError("PINNED_TOOLS is empty, so this check would verify nothing")
     versions: dict[str, str] = {}
-    drifted: list[str] = []
+    problems: list[str] = []
     for package, repository in PINNED_TOOLS.items():
-        locked = locked_version(package, lockfile)
-        versions[package] = locked
-        pinned = pre_commit_version(repository, config)
+        try:
+            locked = locked_version(package, lockfile)
+            versions[package] = locked
+            pinned = pre_commit_version(repository, config)
+        except VersionError as err:
+            problems.append(f"{package}: {err}")
+            continue
         if locked != pinned:
-            drifted.append(f"{package}: {lockfile} has {locked}, {config} pins {pinned} (bump the rev to v{locked})")
-    if drifted:
+            problems.append(f"{package}: {lockfile} has {locked}, {config} pins {pinned} (bump the rev to v{locked})")
+    if problems:
         raise VersionError(
             "version drift between the lockfile and the pre-commit hooks. Dependabot "
-            "updates the lockfile but not a pre-commit rev - " + "; ".join(drifted)
+            "updates the lockfile but not a pre-commit rev - " + "; ".join(problems)
         )
     return versions
+
+
+def unguarded_repositories(config: pathlib.Path = PRE_COMMIT) -> set[str]:
+    """Repositories in the config that neither PINNED_TOOLS nor UNGUARDED_REPOS covers.
+
+    Exists so a hook added later cannot drift unnoticed: the table is only a guarantee
+    if something checks the table itself is complete.
+    """
+    known = set(PINNED_TOOLS.values()) | set(UNGUARDED_REPOS)
+    return {repo for repo in _repo_blocks(config) if repo not in known}
 
 
 def main(argv: list[str]) -> int:
