@@ -8,6 +8,18 @@ tagged in git.
 
 ### Fixed
 
+- The pre-commit hook for mypy pinned 1.20.1 while the lockfile resolved 2.3.1 — a major version
+  apart, so a local hook run and CI could disagree about whether the code type-checks at all, in
+  either direction. `tools/ruff_version.py` becomes `tools/pinned_versions.py` and guards every
+  tool in `PINNED_TOOLS`, not only ruff, reporting all drifted tools rather than the first. Found
+  while reviewing a Dependabot ruff bump, where the ruff guard had just done its job for the first
+  time.
+- The mypy hook covered `^(src|tests)/` while CI type-checks `tools/` as well — the same
+  divergence in the other direction: clean locally, red in CI.
+- The ruff hook id moves from `ruff` to `ruff-check`. Upstream describes `ruff` as a legacy alias,
+  and since the guard forces this `rev` forward on every bump, the release removing it would
+  otherwise break pre-commit for whoever pulled next.
+
 - A source calendar's failure no longer costs the calendars after it. `main()`'s loop caught
   only `YamlError` — its termination signal rather than error handling — so any other exception
   escaped the loop entirely. On 2026-08-20 a single already-deleted event in `source-calendar-0`
