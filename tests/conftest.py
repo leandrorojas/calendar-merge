@@ -18,7 +18,7 @@ import merge
 # --- environment isolation ---
 
 ENV_VARS = (
-    "CALENDAR_MERGE_STATE_FILE",
+    merge.ENV_STATE_FILE,
     merge.ENV_ICLOUD_USER,
     merge.ENV_ICLOUD_PASS,
     merge.ENV_TELEGRAM_TOKEN,

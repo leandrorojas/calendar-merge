@@ -102,4 +102,4 @@ pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.3" }
 
 # Optional: CLI entry point (runs merge:main)
 [project.scripts]
-calendar-merge = "merge:main"
+calendar-merge = "merge:cli"

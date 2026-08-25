@@ -231,9 +231,33 @@ between runs re-alerts, which is right: a fault that keeps changing is news each
 design, so without that the suite writes into the repository's `logs/` and one test's recorded
 failure suppresses another's alert.
 
+`cli()` is the entry point for **both** the console script and `python src/merge.py`, and
+`pyproject.toml` points `calendar-merge` at it rather than at `main()`. It pointed at `main()`
+before, which skips `_configure_logging` and `_run_and_report` entirely — so on the path the
+README schedules, a failure produced a bare traceback with no log line and no Telegram alert at
+all, and this whole feature was inert.
+
 `_run_and_report` holds the outcome path rather than the `__main__` block, because driving that
 block through `runpy` re-executes the module and leaves no seam for making `main()` succeed or
 fail on demand.
+
+**The state is validated on read, not trusted.** `json.loads` returns `Any`, so `[]` or
+`{"runs": null}` type-checks fine and then raises from `.get(...)` or `int(...)` *inside* the
+failure handler — escaping it and losing the alert it was handling, which is the one outcome the
+fail-open design forbids. `_read_failure_state` returns `None` unless the parsed value is a dict
+whose counters coerce to integers.
+
+**A failure counts as reported only once the alert is delivered.** `send_telegram_message`
+swallows transport errors, so recording "alerted" before the send meant a flood-control response
+on the first failure suppressed every repeat — hiding the outage for an hour, or forever with
+`failure_alert_every: 0`. It now returns whether the message went out, and `alerted_at` records
+the run at which one actually did. Before this feature existed a dropped message self-healed on
+the next run; that property is preserved deliberately.
+
+**The state file is written atomically**, via a temporary file and `os.replace`. Runs can
+overlap — 2FA polling alone may span a whole cron interval — and a torn truncating write reads as
+absent. That fails open for a failure but fails *closed* for recovery: the "recovered" message
+would simply never arrive.
 
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
