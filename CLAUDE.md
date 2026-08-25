@@ -44,13 +44,21 @@ CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull r
 two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
 `PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
 
-`uv.lock` is the single source of truth for the Ruff version. The lint job reads it through
-`tools/ruff_version.py` instead of repeating it, because Dependabot updates the lockfile and
+`uv.lock` is the single source of truth for pinned tool versions. The lint job reads it through
+`tools/pinned_versions.py` instead of repeating it, because Dependabot updates the lockfile and
 `pyproject.toml` but cannot see a string literal in a workflow — so the 0.15.10 to 0.16.3 bump
 left CI linting with the previous release while local runs used the new one, which is the exact
-drift the pin was introduced to prevent. `--check` additionally asserts the `rev` in
-`.pre-commit-config.yaml` agrees, since a pre-commit `rev` cannot be derived at run time and so
-has to be verified instead. The script imports only the standard library, so the step runs it with plain `python` rather
+drift the pin was introduced to prevent. `--check` additionally asserts that **every** pinned `rev` in
+`.pre-commit-config.yaml` agrees — `PINNED_TOOLS` lists them, since a pre-commit `rev` cannot be derived at run time and so
+has to be verified instead.
+
+The same hole was open for mypy and went unnoticed longer, because only ruff was guarded: the
+hook pinned 1.20.1 while the lockfile resolved 2.3.1, a major version apart. A pre-commit run
+and CI could therefore disagree about whether the code type-checks at all — in either
+direction, a local pass that fails CI or a real type error accepted locally. Adding a tool to
+`.pre-commit-config.yaml` without adding it to `PINNED_TOOLS` leaves it unguarded, so a test
+asserts the table's contents rather than trusting it. `check()` evaluates every tool before
+raising, so a bump moving two does not hide one behind the other. The script imports only the standard library, so the step runs it with plain `python` rather
 than through `uv run`: there is no environment to resolve and nothing to build, which keeps
 the lint job free of the private dependency and its deploy key. Routing it through uv meant
 either resolving dependencies it does not have or passing flags to suppress that.

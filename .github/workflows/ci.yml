@@ -39,12 +39,14 @@ jobs:
       # since a rev cannot be derived at run time.
       - name: Resolve the pinned Ruff version
         id: ruff
+        # --check asserts every pinned pre-commit rev matches the lockfile, not only
+        # ruff's: mypy had drifted the same way, a major version apart.
         # Plain python, not `uv run`: the script imports only the standard library, so
         # there is no environment to resolve and nothing to build. Routing it through uv
         # would mean either resolving dependencies it does not have or passing flags to
         # suppress that -- both worse than not asking for it.
         run: |
-          version=$(python tools/ruff_version.py --check)
+          version=$(python tools/pinned_versions.py ruff --check)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # Installed standalone rather than through the project, so this job needs no
