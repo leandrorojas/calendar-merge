@@ -1,6 +1,7 @@
 # imports
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ YAML_FILENAME = "config.yaml"
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
 YAML_SETTING_FUTURE_EVENTS_DAYS = "future_events_days"
+YAML_SETTING_FAILURE_ALERT_EVERY = "failure_alert_every"
 
 YAML_SECTION_SOURCE_CALENDAR = "source-calendar-{index}"
 YAML_SETTING_CALENDAR_SOURCE = "source"
@@ -122,6 +124,7 @@ _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 # instead, and validate_2fa ignores the FIDO2 result, so a confirmation there
 # could claim success for a key confirmation that actually failed.
 TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted"
+TELEGRAM_RECOVERED_MESSAGE = "✅ calendar-merge recovered"
 
 # The run still fails, but the failure alert on its own is misleading when trust
 # was established anyway: it looks like nothing was achieved when in fact the next
@@ -132,6 +135,18 @@ TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE = (
 
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
+
+# Survives between runs so a repeated failure can be recognised as one. Every run is
+# otherwise a fresh process with no memory of the last, which is why a 45-minute Apple
+# outage on 2026-08-18 produced one identical alert per run.
+ENV_STATE_FILE = "CALENDAR_MERGE_STATE_FILE"
+DEFAULT_STATE_FILE = "logs/failure-state.json"
+
+# How many further failed runs before the alert repeats. The first failure always
+# alerts; this stops a long outage going indefinitely quiet, which would make silence
+# mean either "working" or "still broken and no longer saying so". With a 15-minute
+# schedule the default reminds hourly. 0 disables the repeat entirely.
+DEFAULT_FAILURE_ALERT_EVERY = 4
 DEFAULT_LOG_LEVEL = "INFO"
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
@@ -165,6 +180,17 @@ TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.
 logger = logging.getLogger("calendar-merge")
 
 
+def _project_path(configured: str) -> Path:
+    """Resolve a configured path, anchoring a relative one to the project root.
+
+    Not the working directory: cron invokes this from wherever it happens to be.
+    """
+    path = Path(configured)
+    if path.is_absolute():
+        return path
+    return Path(__file__).resolve().parent.parent / path
+
+
 def _configure_logging() -> None:
     """Set up the rotating file handler for persistent logs.
 
@@ -177,10 +203,7 @@ def _configure_logging() -> None:
     level = getattr(logging, level_name, logging.INFO)
     logger.setLevel(level)
 
-    log_file = os.getenv(ENV_LOG_FILE, DEFAULT_LOG_FILE)
-    log_path = Path(log_file)
-    if not log_path.is_absolute():
-        log_path = Path(__file__).resolve().parent.parent / log_path
+    log_path = _project_path(os.getenv(ENV_LOG_FILE, DEFAULT_LOG_FILE))
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     handler = RotatingFileHandler(log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
@@ -201,6 +224,103 @@ def _condense(text: str, limit: int = ERROR_PART_MAX_CHARS) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _failure_state_path() -> Path:
+    """Where the last failure is recorded between runs."""
+    return _project_path(os.getenv(ENV_STATE_FILE, DEFAULT_STATE_FILE))
+
+
+def _read_failure_state() -> dict | None:
+    """The recorded failure, or None if there is none or it cannot be read.
+
+    Unreadable is deliberately indistinguishable from absent: every decision built on
+    this state fails open, alerting rather than staying silent. A lost alert is worse
+    than a duplicated one.
+    """
+    try:
+        return json.loads(_failure_state_path().read_text())
+    except Exception:
+        return None
+
+
+def _write_failure_state(cause: str, runs: int) -> None:
+    """Record the current failure. Best effort: an unwritable state file only costs
+    suppression, so it must not turn a failed merge into a crash."""
+    try:
+        path = _failure_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"cause": cause, "runs": runs}))
+    except Exception:
+        logger.warning("could not record failure state; alerts will not be suppressed", exc_info=True)
+
+
+def _clear_failure_state() -> None:
+    """Forget the recorded failure, so the next one is news again."""
+    try:
+        _failure_state_path().unlink(missing_ok=True)
+    except Exception:
+        logger.warning("could not clear failure state", exc_info=True)
+
+
+def _failure_alert_every() -> int:
+    """How many further failures between repeat alerts, from `config.yaml`.
+
+    Read on the failure path, so it tolerates the configuration being the very thing
+    that is broken: anything unreadable falls back to the default rather than masking
+    the original error with a second one.
+    """
+    try:
+        helper = YamlHelper(Path(__file__).resolve().parent.parent / YAML_FILENAME)
+        return max(0, int(helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FAILURE_ALERT_EVERY)))
+    except Exception:
+        return DEFAULT_FAILURE_ALERT_EVERY
+
+
+def _should_report_failure(cause: str) -> bool:
+    """True when this failure is news rather than the previous one repeating.
+
+    Runs are independent processes fifteen minutes apart, so without this a single
+    upstream outage sends one identical alert per run -- three on 2026-08-18, and up to
+    forty-one across a full weekday schedule. None of them carried information the
+    first had not.
+
+    Alerting is by *transition*, with a reminder: a new cause is reported, the same
+    cause repeating is not, and `failure_alert_every` in `config.yaml` says how many
+    further failures pass before it is repeated so a long outage does not go silent.
+    `_report_recovery` closes the loop, so silence is never ambiguous.
+
+    Causes are compared as text, so a message that varies between runs re-alerts --
+    fail open again, since suppressing a fault that keeps changing would hide the
+    changes.
+    """
+    previous = _read_failure_state()
+    runs = 1
+    if previous is not None and previous.get("cause") == cause:
+        runs = int(previous.get("runs", 1)) + 1
+    _write_failure_state(cause, runs)
+    if runs == 1:
+        return True
+    every = _failure_alert_every()
+    # Reached only while the same cause persists, so this is the reminder cadence:
+    # with `failure_alert_every: 4` the 5th, 9th, 13th failed run alert again.
+    return every > 0 and (runs - 1) % every == 0
+
+
+def _report_recovery() -> None:
+    """Announce that a run succeeded after failures, then forget them.
+
+    Without this, suppression makes silence ambiguous: a quiet channel would mean
+    either "working" or "still broken, and we stopped saying so".
+    """
+    previous = _read_failure_state()
+    if previous is None:
+        return
+    _clear_failure_state()
+    runs = int(previous.get("runs", 1))
+    plural = "" if runs == 1 else "s"
+    cause = _condense(str(previous.get("cause", "unknown")))
+    send_telegram_message(f"{TELEGRAM_RECOVERED_MESSAGE} after {runs} failed run{plural} - was: {cause}")
 
 
 def _describe_error(err: BaseException) -> str:
@@ -1576,6 +1696,30 @@ def _process_all_source_calendars(
     return failures, source_index
 
 
+def _run_and_report() -> None:
+    """Run the merge and report the outcome, without letting a failure escape.
+
+    Separate from the `__main__` block so it can be exercised directly: driving that
+    block through `runpy` re-executes the module, which leaves no seam for making
+    `main()` succeed or fail on demand.
+    """
+    try:
+        main()
+    except Exception as err:
+        described = _describe_error(err)
+        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
+        logger.exception("Merge process failed")
+        # Alert on the transition, not on every occurrence: a single upstream outage
+        # spans several runs, and every alert after the first repeats what the first
+        # already said. The log still records each one.
+        if _should_report_failure(described):
+            send_telegram_message(f"Calendar merge failed: {described}")
+        else:
+            logger.info("failure alert suppressed: same cause as the previous run")
+    else:
+        _report_recovery()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
     parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
@@ -1629,13 +1773,7 @@ if __name__ == "__main__":
     merge_start = perf_counter()
     term.print_header_box("iCloud calendar merger")
 
-    try:
-        main()
-    except Exception as err:
-        described = _describe_error(err)
-        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
-        logger.exception("Merge process failed")
-        send_telegram_message(f"Calendar merge failed: {described}")
+    _run_and_report()
 
     merge_end = perf_counter()
     total = merge_end - merge_start

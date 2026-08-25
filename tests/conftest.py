@@ -18,6 +18,7 @@ import merge
 # --- environment isolation ---
 
 ENV_VARS = (
+    "CALENDAR_MERGE_STATE_FILE",
     merge.ENV_ICLOUD_USER,
     merge.ENV_ICLOUD_PASS,
     merge.ENV_TELEGRAM_TOKEN,
@@ -50,6 +51,17 @@ def clean_env(monkeypatch, block_dotenv):
     """Drop every env var merge.py reads, so tests never inherit a real .env."""
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolated_failure_state(tmp_path, monkeypatch):
+    """Point the failure-state file at tmp_path.
+
+    It persists between runs by design, so without this the suite would write into the
+    repository's `logs/` and one test's recorded failure would suppress another's
+    alert. Redirected for every test, exactly as the log file is.
+    """
+    monkeypatch.setenv(merge.ENV_STATE_FILE, str(tmp_path / "failure-state.json"))
 
 
 @pytest.fixture(autouse=True)
