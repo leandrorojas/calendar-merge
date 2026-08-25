@@ -230,6 +230,31 @@ class TestCheck:
         with pytest.raises(VersionError, match="declares no hook"):
             check(lock, config)
 
+    def test_a_duplicate_block_at_an_older_rev_is_caught(self, tmp_path):
+        """pre-commit runs every block, so keeping only the last hid a running hook.
+
+        An older `ruff-pre-commit` listed first still runs; validating only the newer
+        block reported success while ruff 0.9.0 was what actually executed.
+        """
+        stale = (
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.9.0\n    hooks:\n      - id: ruff-check\n"
+        )
+        lock, config = write(tmp_path, pre_commit=stale + PRE_COMMIT.split("repos:\n", 1)[1])
+
+        with pytest.raises(VersionError, match="more than one rev"):
+            check(lock, config)
+
+    def test_a_duplicate_block_at_the_same_rev_is_allowed(self, tmp_path):
+        """Splitting hooks across two blocks at one rev is legitimate, not drift."""
+        extra = (
+            "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "    rev: v0.16.3\n    hooks:\n      - id: ruff-format\n"
+        )
+        lock, config = write(tmp_path, pre_commit=extra + PRE_COMMIT.split("repos:\n", 1)[1])
+
+        assert check(lock, config)["ruff"] == "0.16.3"
+
     def test_a_similarly_named_repository_is_not_mistaken(self, tmp_path):
         """`ruff-pre-commit-nightly` must not be read as `ruff-pre-commit`."""
         nightly = (

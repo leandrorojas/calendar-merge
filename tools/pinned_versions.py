@@ -64,26 +64,32 @@ class VersionError(Exception):
     """A pinned version is missing, inconsistent, or not a version at all."""
 
 
-def _repo_blocks(config: pathlib.Path) -> dict[str, list[str]]:
-    """Split the pre-commit config into one line-list per repository.
+def _repo_blocks(config: pathlib.Path) -> dict[str, list[list[str]]]:
+    """Split the pre-commit config into the line-lists of each repository's blocks.
 
     Parsed by block rather than matched with a single pattern: a regex spanning from a
     repository name to the next `rev:` reads whatever lies between them, so a comment,
     a reordered `hooks:` key, or a similarly named repository silently changes which
     version is checked.
+
+    A repository may appear more than once -- pre-commit runs every block, so listing
+    one twice at different revs runs both. Keyed to a *list* of blocks rather than one,
+    because keeping only the last let an older rev run unchecked while the guard
+    validated the newer one and passed.
     """
     if not config.is_file():
         raise VersionError(f"{config} not found")
-    blocks: dict[str, list[str]] = {}
-    current: str | None = None
+    blocks: dict[str, list[list[str]]] = {}
+    current: list[str] | None = None
     for line in config.read_text().splitlines():
         match = REPO_LINE.match(line)
         if match:
-            current = match.group("url").rstrip("/").rsplit("/", 1)[-1]
-            blocks[current] = []
+            repository = match.group("url").rstrip("/").rsplit("/", 1)[-1]
+            current = []
+            blocks.setdefault(repository, []).append(current)
             continue
         if current is not None:
-            blocks[current].append(line)
+            current.append(line)
     return blocks
 
 
@@ -117,14 +123,19 @@ def pre_commit_version(repository: str, config: pathlib.Path = PRE_COMMIT) -> st
     blocks = _repo_blocks(config)
     if repository not in blocks:
         raise VersionError(f"no {repository} repo found in {config}")
-    lines = blocks[repository]
-    revisions = [REV_LINE.match(line) for line in lines]
-    found = [match for match in revisions if match]
-    if not found:
-        raise VersionError(f"{repository} in {config} has no rev")
-    if not any(HOOK_ID_LINE.match(line) for line in lines):
-        raise VersionError(f"{repository} in {config} pins a rev but declares no hook, so nothing runs")
-    return _validated(found[0].group("version"), config)
+    versions: list[str] = []
+    for lines in blocks[repository]:
+        found = [match for match in (REV_LINE.match(line) for line in lines) if match]
+        if not found:
+            raise VersionError(f"{repository} in {config} has no rev")
+        if not any(HOOK_ID_LINE.match(line) for line in lines):
+            raise VersionError(f"{repository} in {config} pins a rev but declares no hook, so nothing runs")
+        versions.append(_validated(found[0].group("version"), config))
+    # Every block runs, so every block must agree. Returning just one would let an
+    # older duplicate keep running while the guard reported success.
+    if len(set(versions)) > 1:
+        raise VersionError(f"{repository} in {config} is pinned at more than one rev: {sorted(set(versions))}")
+    return versions[0]
 
 
 def check(lockfile: pathlib.Path = LOCKFILE, config: pathlib.Path = PRE_COMMIT) -> dict[str, str]:
