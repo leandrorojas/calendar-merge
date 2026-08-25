@@ -225,6 +225,57 @@ means "changed" rather than "attempted"; counting before would report a failed a
 An earlier note here called that an equivalent mutant, which was true only while a failure
 skipped the report entirely — it is now killed by two tests.
 
+**Failure alerts fire on transitions, not on occurrences.** Runs are independent processes
+fifteen minutes apart holding no state between them, so a single upstream outage sent one
+identical alert per run — three on 2026-08-18, and up to forty-one across a full weekday
+schedule. None after the first carried information the first had not.
+
+`_should_report_failure` records the cause in a state file (`CALENDAR_MERGE_STATE_FILE`,
+default `logs/failure-state.json`) and reports only when the failure is *news*: a first
+failure, a changed cause, or the reminder cadence coming round. `failure_alert_every` in
+`config.yaml` sets that cadence — with a 15-minute schedule the default of 4 reminds hourly,
+and `0` disables the repeat.
+
+`_report_recovery` closes the loop. Without it suppression makes silence ambiguous: a quiet
+channel would mean either "working" or "still broken and no longer saying so".
+
+**Every decision on that state fails open.** An unreadable, corrupt or absent file is treated
+the same — alert — and an unwritable one only costs suppression rather than crashing the run. A
+lost alert is worse than a duplicated one. Causes are compared as text, so a message that varies
+between runs re-alerts, which is right: a fault that keeps changing is news each time.
+
+`tests/conftest.py` redirects the state file per test through an autouse fixture. It persists by
+design, so without that the suite writes into the repository's `logs/` and one test's recorded
+failure suppresses another's alert.
+
+`cli()` is the entry point for **both** the console script and `python src/merge.py`, and
+`pyproject.toml` points `calendar-merge` at it rather than at `main()`. It pointed at `main()`
+before, which skips `_configure_logging` and `_run_and_report` entirely — so on the path the
+README schedules, a failure produced a bare traceback with no log line and no Telegram alert at
+all, and this whole feature was inert.
+
+`_run_and_report` holds the outcome path rather than the `__main__` block, because driving that
+block through `runpy` re-executes the module and leaves no seam for making `main()` succeed or
+fail on demand.
+
+**The state is validated on read, not trusted.** `json.loads` returns `Any`, so `[]` or
+`{"runs": null}` type-checks fine and then raises from `.get(...)` or `int(...)` *inside* the
+failure handler — escaping it and losing the alert it was handling, which is the one outcome the
+fail-open design forbids. `_read_failure_state` returns `None` unless the parsed value is a dict
+whose counters coerce to integers.
+
+**A failure counts as reported only once the alert is delivered.** `send_telegram_message`
+swallows transport errors, so recording "alerted" before the send meant a flood-control response
+on the first failure suppressed every repeat — hiding the outage for an hour, or forever with
+`failure_alert_every: 0`. It now returns whether the message went out, and `alerted_at` records
+the run at which one actually did. Before this feature existed a dropped message self-healed on
+the next run; that property is preserved deliberately.
+
+**The state file is written atomically**, via a temporary file and `os.replace`. Runs can
+overlap — 2FA polling alone may span a whole cron interval — and a torn truncating write reads as
+absent. That fails open for a failure but fails *closed* for recovery: the "recovered" message
+would simply never arrive.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception

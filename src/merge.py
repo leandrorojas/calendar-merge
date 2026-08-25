@@ -1,6 +1,7 @@
 # imports
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ YAML_FILENAME = "config.yaml"
 YAML_SECTION_GENERAL = "config"
 YAML_SETTING_SKIP_DAYS = "skip_days"
 YAML_SETTING_FUTURE_EVENTS_DAYS = "future_events_days"
+YAML_SETTING_FAILURE_ALERT_EVERY = "failure_alert_every"
 
 YAML_SECTION_SOURCE_CALENDAR = "source-calendar-{index}"
 YAML_SETTING_CALENDAR_SOURCE = "source"
@@ -122,6 +124,7 @@ _TWO_FACTOR_CODE_PATTERN = re.compile(r"^\d{6}$")
 # instead, and validate_2fa ignores the FIDO2 result, so a confirmation there
 # could claim success for a key confirmation that actually failed.
 TELEGRAM_2FA_ACCEPTED_MESSAGE = "✅ Apple 2FA code accepted"
+TELEGRAM_RECOVERED_MESSAGE = "✅ calendar-merge recovered"
 
 # The run still fails, but the failure alert on its own is misleading when trust
 # was established anyway: it looks like nothing was achieved when in fact the next
@@ -132,6 +135,18 @@ TELEGRAM_2FA_TRUSTED_AFTER_FAILURE_MESSAGE = (
 
 # Default log file relative to project root. Overridable via CALENDAR_MERGE_LOG_FILE.
 DEFAULT_LOG_FILE = "logs/calendar-merge.log"
+
+# Survives between runs so a repeated failure can be recognised as one. Every run is
+# otherwise a fresh process with no memory of the last, which is why a 45-minute Apple
+# outage on 2026-08-18 produced one identical alert per run.
+ENV_STATE_FILE = "CALENDAR_MERGE_STATE_FILE"
+DEFAULT_STATE_FILE = "logs/failure-state.json"
+
+# How many further failed runs before the alert repeats. The first failure always
+# alerts; this stops a long outage going indefinitely quiet, which would make silence
+# mean either "working" or "still broken and no longer saying so". With a 15-minute
+# schedule the default reminds hourly. 0 disables the repeat entirely.
+DEFAULT_FAILURE_ALERT_EVERY = 4
 DEFAULT_LOG_LEVEL = "INFO"
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
@@ -165,6 +180,17 @@ TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.
 logger = logging.getLogger("calendar-merge")
 
 
+def _project_path(configured: str) -> Path:
+    """Resolve a configured path, anchoring a relative one to the project root.
+
+    Not the working directory: cron invokes this from wherever it happens to be.
+    """
+    path = Path(configured)
+    if path.is_absolute():
+        return path
+    return Path(__file__).resolve().parent.parent / path
+
+
 def _configure_logging() -> None:
     """Set up the rotating file handler for persistent logs.
 
@@ -177,10 +203,7 @@ def _configure_logging() -> None:
     level = getattr(logging, level_name, logging.INFO)
     logger.setLevel(level)
 
-    log_file = os.getenv(ENV_LOG_FILE, DEFAULT_LOG_FILE)
-    log_path = Path(log_file)
-    if not log_path.is_absolute():
-        log_path = Path(__file__).resolve().parent.parent / log_path
+    log_path = _project_path(os.getenv(ENV_LOG_FILE, DEFAULT_LOG_FILE))
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     handler = RotatingFileHandler(log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
@@ -201,6 +224,134 @@ def _condense(text: str, limit: int = ERROR_PART_MAX_CHARS) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _failure_state_path() -> Path:
+    """Where the last failure is recorded between runs."""
+    return _project_path(os.getenv(ENV_STATE_FILE, DEFAULT_STATE_FILE))
+
+
+def _read_failure_state() -> dict | None:
+    """The recorded failure, or None if there is none or it cannot be trusted.
+
+    Unreadable, absent and *malformed* are deliberately indistinguishable: every
+    decision built on this state fails open, alerting rather than staying silent. A
+    lost alert is worse than a duplicated one.
+
+    Shape is validated here rather than at the call sites. `json.loads` returns `Any`,
+    so a file containing `[]` or `{"runs": null}` type-checks fine and then raises from
+    `previous.get(...)` or `int(...)` inside the failure handler -- escaping it and
+    losing the very alert it was handling.
+    """
+    try:
+        parsed = json.loads(_failure_state_path().read_text())
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        runs = int(parsed.get("runs", 1))
+        alerted_at = int(parsed.get("alerted_at", 0))
+    except (TypeError, ValueError):
+        return None
+    return {"cause": str(parsed.get("cause", "")), "runs": runs, "alerted_at": alerted_at}
+
+
+def _write_failure_state(cause: str, runs: int, alerted_at: int) -> None:
+    """Record the current failure. Best effort: an unwritable state file only costs
+    suppression, so it must not turn a failed merge into a crash.
+
+    Written atomically. A truncating write can be interrupted or overlapped -- runs can
+    overlap, since 2FA polling alone may span a whole cron interval -- and a torn file
+    reads as absent. That fails open for a failure, but fails *closed* for recovery: the
+    "recovered" message would simply never arrive.
+    """
+    payload = json.dumps({"cause": cause, "runs": runs, "alerted_at": alerted_at})
+    try:
+        path = _failure_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(payload)
+        os.replace(temporary, path)
+    except Exception:
+        logger.warning("could not record failure state; alerts will not be suppressed", exc_info=True)
+
+
+def _clear_failure_state() -> None:
+    """Forget the recorded failure, so the next one is news again."""
+    try:
+        _failure_state_path().unlink(missing_ok=True)
+    except Exception:
+        logger.warning("could not clear failure state", exc_info=True)
+
+
+def _failure_alert_every() -> int:
+    """How many further failures between repeat alerts, from `config.yaml`.
+
+    Read on the failure path, so it tolerates the configuration being the very thing
+    that is broken: anything unreadable falls back to the default rather than masking
+    the original error with a second one.
+    """
+    try:
+        helper = YamlHelper(_project_path(YAML_FILENAME))
+        return max(0, int(helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FAILURE_ALERT_EVERY)))
+    except Exception:
+        return DEFAULT_FAILURE_ALERT_EVERY
+
+
+def _record_failure(cause: str) -> tuple[int, bool]:
+    """Record this failure and say whether to alert. Returns `(runs, should_alert)`.
+
+    Runs are independent processes fifteen minutes apart, so without this a single
+    upstream outage sends one identical alert per run -- three on 2026-08-18, and up to
+    forty-one across a full weekday schedule. None of them carried information the
+    first had not.
+
+    Alerting is by *transition*, with a reminder: a new cause is reported, the same
+    cause repeating is not, and `failure_alert_every` in `config.yaml` says how many
+    further failures pass before it is repeated so a long outage does not go silent.
+    `_report_recovery` closes the loop, so silence is never ambiguous.
+
+    The decision keys on `alerted_at` -- the run at which an alert was last *delivered*
+    -- not on the run count. `send_telegram_message` swallows transport errors, so a
+    flood-control response on the first failure would otherwise mark it reported and
+    suppress every repeat, hiding the outage for an hour or, with
+    `failure_alert_every: 0`, forever. Leaving `alerted_at` at zero re-alerts next run.
+
+    Causes are compared as text, so a message that varies between runs re-alerts --
+    fail open again, since a fault that keeps changing is news each time.
+    """
+    previous = _read_failure_state()
+    runs, alerted_at = 1, 0
+    if previous is not None and previous.get("cause") == cause:
+        runs = previous["runs"] + 1
+        alerted_at = previous["alerted_at"]
+    _write_failure_state(cause, runs, alerted_at)
+    if alerted_at == 0:
+        return runs, True
+    every = _failure_alert_every()
+    return runs, every > 0 and runs - alerted_at >= every
+
+
+def _mark_failure_alerted(cause: str, runs: int) -> None:
+    """Record that the alert for this failure was delivered."""
+    _write_failure_state(cause, runs, runs)
+
+
+def _report_recovery() -> None:
+    """Announce that a run succeeded after failures, then forget them.
+
+    Without this, suppression makes silence ambiguous: a quiet channel would mean
+    either "working" or "still broken, and we stopped saying so".
+    """
+    previous = _read_failure_state()
+    if previous is None:
+        return
+    _clear_failure_state()
+    runs = int(previous.get("runs", 1))
+    plural = "" if runs == 1 else "s"
+    cause = _condense(str(previous.get("cause", "unknown")))
+    send_telegram_message(f"{TELEGRAM_RECOVERED_MESSAGE} after {runs} failed run{plural} - was: {cause}")
 
 
 def _describe_error(err: BaseException) -> str:
@@ -536,10 +687,16 @@ def print_step(tag: str, message: str, one_liner: bool = True):
 # region Telegram helpers
 
 
-def send_telegram_message(message: str, disable_notification: bool = False) -> None:
-    """Best-effort Telegram notifier used for important user-facing events."""
+def send_telegram_message(message: str, disable_notification: bool = False) -> bool:
+    """Best-effort Telegram notifier used for important user-facing events.
+
+    Returns whether the message was confirmed delivered. Transport errors are still
+    swallowed -- a Telegram outage must not fail the merge -- but the caller can now
+    tell, which matters for failure alerts: marking one reported when it never arrived
+    would suppress every repeat and hide the outage entirely.
+    """
     if not message:
-        return
+        return False
 
     try:
         loop = asyncio.get_running_loop()
@@ -549,11 +706,15 @@ def send_telegram_message(message: str, disable_notification: bool = False) -> N
     coro = send_telegram_message_async(message, disable_notification)
     if loop is None:
         try:
-            asyncio.run(coro)
+            return asyncio.run(coro)
         except Exception as err:  # pragma: no cover - safety net
             term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
-    else:
-        loop.create_task(coro)
+            return False
+    # Fire-and-forget inside a running loop: delivery cannot be confirmed here, and
+    # reporting success without knowing is the failure this return value exists to
+    # prevent.
+    loop.create_task(coro)
+    return False
 
 
 def _get_telegram_credentials() -> tuple[str, str] | None:
@@ -593,25 +754,27 @@ async def _close_notifier(notifier: tg.TelegramNotifier) -> None:
             await maybe_coro
 
 
-async def send_telegram_message_async(message: str, disable_notification: bool = False) -> None:
+async def send_telegram_message_async(message: str, disable_notification: bool = False) -> bool:
+    """Send one message, reporting whether it was delivered."""
     if not message:
-        return
+        return False
 
     creds = _get_telegram_credentials()
     if creds is None:
-        return
+        return False
     token, chat_id = creds
 
     notifier_factory = tg.TelegramNotifier
     if hasattr(notifier_factory, "__aenter__"):
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
             await _send_via_notifier(notifier, message, disable_notification)
-    else:
-        notifier = notifier_factory(token=token, chat_id=chat_id)
-        try:
-            await _send_via_notifier(notifier, message, disable_notification)
-        finally:
-            await _close_notifier(notifier)
+        return True
+    notifier = notifier_factory(token=token, chat_id=chat_id)
+    try:
+        await _send_via_notifier(notifier, message, disable_notification)
+    finally:
+        await _close_notifier(notifier)
+    return True
 
 
 def prompt_telegram_reply(
@@ -1576,6 +1739,35 @@ def _process_all_source_calendars(
     return failures, source_index
 
 
+def _run_and_report() -> None:
+    """Run the merge and report the outcome, without letting a failure escape.
+
+    Separate from the `__main__` block so it can be exercised directly: driving that
+    block through `runpy` re-executes the module, which leaves no seam for making
+    `main()` succeed or fail on demand.
+    """
+    try:
+        main()
+    except Exception as err:
+        described = _describe_error(err)
+        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
+        logger.exception("Merge process failed")
+        # Alert on the transition, not on every occurrence: a single upstream outage
+        # spans several runs, and every alert after the first repeats what the first
+        # already said. The log still records each one.
+        runs, should_alert = _record_failure(described)
+        if not should_alert:
+            logger.info("failure alert suppressed: same cause as the previous run")
+        elif send_telegram_message(f"Calendar merge failed: {described}"):
+            _mark_failure_alerted(described, runs)
+        else:
+            # The send was swallowed, so the user was not told. Leaving the state
+            # unmarked makes the next run try again rather than suppressing it.
+            logger.warning("failure alert could not be delivered; will retry next run")
+    else:
+        _report_recovery()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
     parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
@@ -1622,22 +1814,26 @@ def main():
         send_telegram_message("🌙 calendar-merge finished for today.")
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """The program's entry point, for the console script and `python src/merge.py` alike.
+
+    Both must do the same thing. `pyproject.toml` pointed the console script at `main()`,
+    which skips logging setup *and* the failure handler entirely -- so on the path the
+    README schedules, a failure produced a bare traceback with no log line and no
+    Telegram alert at all.
+    """
     _configure_logging()
     logger.info("calendar-merge started")
 
     merge_start = perf_counter()
     term.print_header_box("iCloud calendar merger")
 
-    try:
-        main()
-    except Exception as err:
-        described = _describe_error(err)
-        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
-        logger.exception("Merge process failed")
-        send_telegram_message(f"Calendar merge failed: {described}")
+    _run_and_report()
 
-    merge_end = perf_counter()
-    total = merge_end - merge_start
+    total = perf_counter() - merge_start
     term.print_header_box("merge & sync completed", f"total time: {total:.3f} seconds")
     logger.info("calendar-merge completed in %.3f seconds", total)
+
+
+if __name__ == "__main__":
+    cli()
