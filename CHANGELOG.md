@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
+## [Unreleased]
+
+### Changed
+
+- Recurrence expansion skips the anchor forward to the window. `rule.between()` iterates from
+  `DTSTART` and discards everything earlier, so cost tracked the anchor's age rather than the
+  window — and Outlook anchors a series at its creation date. `_advance_anchor` moves the anchor
+  by whole periods, which leaves the recurrence lattice unchanged so `BYDAY`, `BYMONTHDAY` and
+  `BYSETPOS` still select the same dates, and refuses to move a `COUNT`-limited rule or one whose
+  `FREQ`/`INTERVAL` cannot be read.
+
+  On the live feeds this saves **0.8ms** — nothing there is finer than weekly. It bounds the worst
+  case instead: `FREQ=MINUTELY` anchored 3.7 years back drops from 1.876s to 0.018s, byte-identical
+  output. Correctness is asserted by expanding 22 rule shapes across 6 anchor ages both ways and
+  requiring identical results.
+
 ## [v0.1.17] — 2026-08-25
 
 ### Added
