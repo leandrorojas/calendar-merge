@@ -1,9 +1,10 @@
 """Tests for iCloud event collection, ICS parsing, and syncing."""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from dateutil.rrule import rrulestr
 from icalendar import Calendar
 
 import merge
@@ -657,6 +658,114 @@ class TestRecurrenceExpansion:
         )
 
         assert len(events) == len({(event.start, event.end) for event in events})
+
+
+RULE_SHAPES = [
+    "FREQ=DAILY",
+    "FREQ=DAILY;INTERVAL=3",
+    "FREQ=WEEKLY",
+    "FREQ=WEEKLY;INTERVAL=2",
+    "FREQ=WEEKLY;BYDAY=TU",
+    "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+    "FREQ=WEEKLY;INTERVAL=2;BYDAY=TH",
+    "FREQ=MONTHLY",
+    "FREQ=MONTHLY;BYMONTHDAY=15",
+    "FREQ=MONTHLY;BYMONTHDAY=-1",
+    "FREQ=MONTHLY;BYDAY=1TU",
+    "FREQ=MONTHLY;BYDAY=-1FR",
+    "FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=31",
+    "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
+    "FREQ=YEARLY",
+    "FREQ=YEARLY;BYMONTH=8;BYMONTHDAY=28",
+    "FREQ=HOURLY;INTERVAL=6",
+    "FREQ=MINUTELY;INTERVAL=90",
+    "FREQ=DAILY;UNTIL=20261231T000000Z",
+    "FREQ=DAILY;COUNT=5",
+    "FREQ=WEEKLY;COUNT=500",
+    "FREQ=DAILY;BYDAY=SA,SU",
+]
+
+ANCHOR_DATES = [(2020, 1, 1), (2023, 1, 1), (2024, 2, 29), (2025, 8, 28), (2026, 3, 15), (2026, 8, 29)]
+
+
+class TestAdvanceAnchor:
+    """Skipping the anchor forward must not change a single occurrence.
+
+    The optimisation only pays off because `rule.between()` iterates from DTSTART; the
+    risk is that moving DTSTART moves the recurrence lattice, since BYDAY, BYMONTHDAY
+    and BYSETPOS are evaluated relative to period boundaries. These assert equivalence
+    against the unoptimised expansion rather than against expected dates, so a rule
+    shape nobody anticipated is still covered.
+    """
+
+    @pytest.mark.parametrize("rule_text", RULE_SHAPES)
+    @pytest.mark.parametrize("anchor_date", ANCHOR_DATES)
+    def test_expansion_is_identical_to_the_unadvanced_rule(self, rule_text, anchor_date):
+        year, month, day = anchor_date
+        anchor = datetime(year, month, day, 9, 0, tzinfo=UTC)
+        window_start = utc(2026, 8, 28, 9)
+        window_end = utc(2026, 9, 10, 9)
+
+        naive = list(rrulestr(rule_text, dtstart=anchor).between(window_start, window_end, inc=True))
+        advanced = list(
+            rrulestr(rule_text, dtstart=merge._advance_anchor(rule_text, anchor, window_start)).between(
+                window_start, window_end, inc=True
+            )
+        )
+
+        assert advanced == naive
+
+    def test_a_trailing_semicolon_is_tolerated(self):
+        """Some feeds emit `FREQ=WEEKLY;` -- the empty chunk must not become a key."""
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+
+        advanced = merge._advance_anchor("FREQ=WEEKLY;", anchor, utc(2026, 8, 28, 9))
+
+        assert advanced > anchor
+        assert merge._rrule_parts("FREQ=WEEKLY;") == {"FREQ": "WEEKLY"}
+
+    def test_a_count_limited_rule_is_never_advanced(self):
+        """COUNT makes occurrences positional, so skipping ahead invents extra ones."""
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor("FREQ=DAILY;COUNT=5", anchor, utc(2026, 8, 28)) == anchor
+
+    def test_an_unknown_frequency_is_never_advanced(self):
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor("FREQ=FORTNIGHTLY", anchor, utc(2026, 8, 28)) == anchor
+
+    def test_a_missing_frequency_is_never_advanced(self):
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor("BYDAY=TU", anchor, utc(2026, 8, 28)) == anchor
+
+    @pytest.mark.parametrize("interval", ["0", "-2", "many"])
+    def test_a_nonsensical_interval_is_never_advanced(self, interval):
+        """`INTERVAL=0` makes dateutil itself spin, so it must not be reasoned about."""
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor(f"FREQ=DAILY;INTERVAL={interval}", anchor, utc(2026, 8, 28)) == anchor
+
+    def test_an_anchor_already_inside_the_window_is_untouched(self):
+        anchor = datetime(2026, 8, 29, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor("FREQ=DAILY", anchor, utc(2026, 8, 28)) == anchor
+
+    def test_the_advanced_anchor_never_passes_the_window(self):
+        """Advancing past the window start would skip occurrences inside it."""
+        anchor = datetime(2023, 1, 1, 9, 0, tzinfo=UTC)
+        window_start = utc(2026, 8, 28, 9)
+
+        assert merge._advance_anchor("FREQ=WEEKLY;INTERVAL=2", anchor, window_start) <= window_start
+
+    def test_it_actually_skips_ahead(self):
+        """Otherwise the whole change is inert and the tests above prove nothing."""
+        anchor = datetime(2020, 1, 1, 9, 0, tzinfo=UTC)
+
+        advanced = merge._advance_anchor("FREQ=DAILY", anchor, utc(2026, 8, 28, 9))
+
+        assert advanced > anchor + timedelta(days=2000)
 
 
 class TestRecurrenceHelpers:
