@@ -685,7 +685,29 @@ RULE_SHAPES = [
     "FREQ=DAILY;BYDAY=SA,SU",
 ]
 
-ANCHOR_DATES = [(2020, 1, 1), (2023, 1, 1), (2024, 2, 29), (2025, 8, 28), (2026, 3, 15), (2026, 8, 29)]
+# Days 29-31 are load-bearing: month and year arithmetic clamps a day the target month
+# lacks, which moved every occurrence of a MONTHLY series and invented events that were
+# never in the feed. The original set stopped at 29 and missed all of it.
+ANCHOR_DATES = [
+    (2020, 1, 1),
+    (2023, 1, 1),
+    (2023, 1, 31),
+    (2019, 9, 30),
+    (2021, 7, 31),
+    (2024, 2, 29),
+    (2025, 8, 28),
+    (2026, 3, 15),
+    (2026, 8, 29),
+]
+
+# Windows in months of differing length, so a clamped anchor has somewhere to land wrong.
+WINDOWS = [
+    (utc(2026, 8, 28, 9), utc(2026, 9, 10, 9)),
+    (utc(2026, 10, 15, 9), utc(2026, 11, 5, 9)),
+    (utc(2026, 11, 9, 9), utc(2026, 12, 19, 9)),
+    (utc(2026, 2, 1, 9), utc(2026, 3, 5, 9)),
+    (utc(2028, 2, 1, 9), utc(2028, 3, 5, 9)),
+]
 
 
 class TestAdvanceAnchor:
@@ -700,11 +722,11 @@ class TestAdvanceAnchor:
 
     @pytest.mark.parametrize("rule_text", RULE_SHAPES)
     @pytest.mark.parametrize("anchor_date", ANCHOR_DATES)
-    def test_expansion_is_identical_to_the_unadvanced_rule(self, rule_text, anchor_date):
+    @pytest.mark.parametrize("window", WINDOWS)
+    def test_expansion_is_identical_to_the_unadvanced_rule(self, rule_text, anchor_date, window):
         year, month, day = anchor_date
         anchor = datetime(year, month, day, 9, 0, tzinfo=UTC)
-        window_start = utc(2026, 8, 28, 9)
-        window_end = utc(2026, 9, 10, 9)
+        window_start, window_end = window
 
         naive = list(rrulestr(rule_text, dtstart=anchor).between(window_start, window_end, inc=True))
         advanced = list(
@@ -714,6 +736,50 @@ class TestAdvanceAnchor:
         )
 
         assert advanced == naive
+
+    @pytest.mark.parametrize("anchor_date", [(2023, 1, 31), (2019, 9, 30), (2024, 2, 29)])
+    @pytest.mark.parametrize("rule_text", ["FREQ=MONTHLY", "FREQ=MONTHLY;INTERVAL=2", "FREQ=YEARLY"])
+    def test_a_clampable_day_is_never_advanced(self, rule_text, anchor_date):
+        """Month arithmetic clamps 31 to 30 or 28, moving the whole series.
+
+        `FREQ=MONTHLY;INTERVAL=2` anchored 2021-07-31 went from contributing nothing to
+        contributing 2026-11-30 -- inventing busy time, the failure this expansion is
+        most careful to avoid.
+        """
+        year, month, day = anchor_date
+        anchor = datetime(year, month, day, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor(rule_text, anchor, utc(2026, 11, 9, 9)) == anchor
+
+    @pytest.mark.parametrize("interval", ["0", "-1", "not-a-number"])
+    def test_a_non_positive_interval_is_refused_before_dateutil(self, interval):
+        """dateutil spins forever on INTERVAL=0 instead of raising.
+
+        An infinite loop is not catchable, so the broad handler in `_expand_recurrence`
+        cannot save the run -- the whole scheduled merge hangs. It has to be refused
+        before `rrulestr` is called.
+        """
+        assert merge._has_usable_interval(f"FREQ=DAILY;INTERVAL={interval}") is False
+
+    @pytest.mark.parametrize("rule_text", ["FREQ=DAILY", "FREQ=DAILY;INTERVAL=1", "FREQ=WEEKLY;INTERVAL=3"])
+    def test_a_usable_interval_is_accepted(self, rule_text):
+        assert merge._has_usable_interval(rule_text) is True
+
+    def test_a_zero_interval_contributes_the_master_rather_than_hanging(self, quiet_terminal):
+        """The series still contributes its own occurrence; only the repeats are lost."""
+        events = parse(
+            [{"start": "20260901T090000Z", "end": "20260901T100000Z", "rrule": "FREQ=DAILY;INTERVAL=0"}],
+            start=utc(2026, 8, 28),
+            end=utc(2026, 9, 10),
+        )
+
+        assert [event.start for event in events] == [utc(2026, 9, 1, 9)]
+
+    def test_a_clampable_day_is_still_advanced_for_fixed_units(self):
+        """Only month and year arithmetic clamps; days and weeks are unaffected."""
+        anchor = datetime(2023, 1, 31, 9, 0, tzinfo=UTC)
+
+        assert merge._advance_anchor("FREQ=DAILY", anchor, utc(2026, 8, 28, 9)) > anchor
 
     def test_a_trailing_semicolon_is_tolerated(self):
         """Some feeds emit `FREQ=WEEKLY;` -- the empty chunk must not become a key."""

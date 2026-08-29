@@ -18,7 +18,12 @@ tagged in git.
   On the live feeds this saves **0.8ms** — nothing there is finer than weekly. It bounds the worst
   case instead: `FREQ=MINUTELY` anchored 3.7 years back drops from 1.876s to 0.018s, byte-identical
   output. Correctness is asserted by expanding 22 rule shapes across 6 anchor ages both ways and
-  requiring identical results.
+  requiring identical results across 9 anchor dates and 5 windows.
+
+  The shift is refused for `MONTHLY`/`YEARLY` anchors past day 28: `relativedelta` clamps a day
+  the target month lacks, which moves every later occurrence and, in one case, invented an event
+  the feed never contained. A non-positive `INTERVAL` is also refused before reaching dateutil,
+  which loops forever on it rather than raising — an infinite loop no handler can catch.
 
 ## [v0.1.17] — 2026-08-25
 

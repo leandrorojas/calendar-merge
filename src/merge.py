@@ -64,6 +64,11 @@ ICS_FIELD_RDATE = "RDATE"
 # The longest a single period of each unit can be, in seconds. Deliberately the upper
 # bound rather than an average: it guarantees the anchor estimate undershoots, so the
 # correction only ever moves forward and can never skip past the window.
+# February is the shortest month, so a day at or below this can never be clamped away
+# by month or year arithmetic. Above it, the anchor shift is refused.
+SHORTEST_MONTH_DAYS = 28
+MONTH_ALIGNED_UNITS = frozenset({"months", "years"})
+
 LONGEST_PERIOD_SECONDS = {
     "seconds": 1,
     "minutes": 60,
@@ -1181,6 +1186,22 @@ def _rrule_parts(rule_text: str) -> dict[str, str]:
     return parts
 
 
+def _has_usable_interval(rule_text: str) -> bool:
+    """False when INTERVAL would make dateutil loop rather than raise.
+
+    `rrulestr` accepts `INTERVAL=0` and then never terminates, so it has to be rejected
+    before the rule is built: an infinite loop is not something an `except` can catch,
+    and the whole scheduled run hangs.
+    """
+    raw = _rrule_parts(rule_text).get("INTERVAL")
+    if raw is None:
+        return True
+    try:
+        return int(raw) >= 1
+    except ValueError:
+        return False
+
+
 def _advance_anchor(rule_text: str, anchor: datetime, window_start: datetime) -> datetime:
     """Move the anchor forward to the last period boundary at or before the window.
 
@@ -1212,6 +1233,15 @@ def _advance_anchor(rule_text: str, anchor: datetime, window_start: datetime) ->
     except ValueError:
         return anchor
     if interval < 1 or anchor >= window_start:
+        return anchor
+    # relativedelta clamps a day the target month lacks -- 31 January plus 44 months is
+    # 30 September, not the 31st -- and for MONTHLY/YEARLY without an explicit
+    # BYMONTHDAY, dateutil derives the day from DTSTART. The clamp therefore moves every
+    # later occurrence permanently: FREQ=MONTHLY;INTERVAL=2 anchored 2021-07-31 went
+    # from producing nothing in a window to producing 2026-11-30, inventing busy time.
+    # Days at or below 28 can never clamp, so only the tail is refused -- and monthly or
+    # yearly series are cheap to expand naively anyway, so nothing worth having is lost.
+    if unit in MONTH_ALIGNED_UNITS and anchor.day > SHORTEST_MONTH_DAYS:
         return anchor
 
     step = relativedelta(**{unit: interval})
@@ -1256,6 +1286,11 @@ def _expand_recurrence(
         # aborted the whole run -- the opposite of what this fallback exists for.
         duration = finish - anchor
         rule_text = rule_field.to_ical().decode()
+        if not _has_usable_interval(rule_text):
+            # Returning None makes the caller fall back to the master's own occurrence,
+            # so the meeting still contributes rather than vanishing.
+            logger.warning("recurrence rule has a non-positive INTERVAL; contributing its original occurrence only")
+            return None
         # Expand in the series' own frame; comparing across offsets needs matching awareness.
         lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)
         upper = window_end.astimezone(anchor.tzinfo) if anchor.tzinfo else window_end.replace(tzinfo=None)

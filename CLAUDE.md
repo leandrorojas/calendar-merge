@@ -373,7 +373,14 @@ lattice unchanged: period boundaries stay where they were, so `BYDAY`, `BYMONTHD
 `BYSETPOS` — all evaluated relative to those boundaries — still select the same dates. It never
 moves past `window_start`, so the period containing the window is generated in full.
 
-It refuses to move an anchor whenever the shift cannot be proven safe: a **`COUNT`**-limited rule,
+It refuses to move an anchor whenever the shift cannot be proven safe:
+
+- **A day above 28 with `MONTHLY`/`YEARLY`.** `relativedelta` clamps a day the target
+  month lacks — 31 January plus 44 months is 30 September — and dateutil derives the day
+  from `DTSTART` when there is no explicit `BYMONTHDAY`, so the clamp moves every later
+  occurrence permanently. `FREQ=MONTHLY;INTERVAL=2` anchored 2021-07-31 went from
+  contributing nothing to contributing 2026-11-30, **inventing busy time**. Monthly and
+  yearly series are cheap to expand naively, so refusing them costs nothing worth having. a **`COUNT`**-limited rule,
 whose occurrences are positional and would gain phantom ones past the end of the series; an
 unrecognised or missing `FREQ`; a non-positive `INTERVAL` (`INTERVAL=0` makes dateutil itself
 spin, so it must not be reasoned about at all).
@@ -384,8 +391,12 @@ in principle and unreachable in practice — a branch that cannot be exercised i
 never known to be right.
 
 Correctness is asserted by equivalence rather than by expected dates: `TestAdvanceAnchor` expands
-22 rule shapes across 6 anchor ages both ways and requires identical output, so a rule shape
-nobody anticipated is still covered.
+22 rule shapes across 9 anchor dates and 5 windows both ways and requires identical output.
+
+The anchor dates matter as much as the rules. The first version stopped at day 29 and passed
+132/132 while the clamping bug above was live — the matrix has to include days 30 and 31, and
+windows in months of differing length, or it proves only that the shapes someone thought of
+work.
 
 Measured 2026-08-28. On the live feeds this saves **0.8ms** — they hold 12 series, none finer than
 weekly, and Google pre-expands so contributes none at all. The value is in bounding the worst
