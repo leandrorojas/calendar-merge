@@ -249,14 +249,21 @@ class TestLoadIcloudEvents:
         assert len(events) == 1
 
     def test_global_skip_days_still_shape_the_window(self):
-        # future_events_days stays global and counts only non-skipped days, so
-        # skipping the weekend stretches a 5-day window past 5 calendar days.
+        """future_events_days is global and counts only non-skipped days.
+
+        Asserts `>=`, not `>`: `_load_icloud_events` reads `datetime.today()`, so the
+        window starts on whatever day the suite runs. Skipping the weekend only
+        *stretches* the window when the window contains one -- five days from a Sunday
+        are Monday to Friday, so both windows end on the same date and a strict
+        comparison fails every Sunday. `TestCalculateFutureDate` pins real dates and
+        covers the stretching itself.
+        """
         service = FakeCalendarService()
 
         _, _, _, today_bod, cut_off_skipping, _ = merge._load_icloud_events(icloud_service(service), 5, ["5", "6"])
         _, _, _, _, cut_off_plain, _ = merge._load_icloud_events(icloud_service(service), 5, [])
 
-        assert cut_off_skipping > cut_off_plain
+        assert cut_off_skipping >= cut_off_plain, "skipping days must never shrink the window"
         assert (cut_off_plain - today_bod).days == 5
 
 
