@@ -364,6 +364,53 @@ means choosing new bounds. Deduplication is per calendar, so two sources holding
 contribute one event each under their own tags. Note `_reconcile_events` still preserves
 multiplicity if handed duplicates directly; the invariant comes from the parse step.
 
+**The recurrence anchor is skipped forward before expanding.** `rule.between()` iterates from
+`DTSTART` and discards everything earlier, so the cost tracks the anchor's *age*, not the window —
+and Outlook anchors a series at its creation date, so that gap is routinely years.
+
+`_advance_anchor` moves the anchor by a whole number of periods. That leaves the recurrence
+lattice unchanged: period boundaries stay where they were, so `BYDAY`, `BYMONTHDAY` and
+`BYSETPOS` — all evaluated relative to those boundaries — still select the same dates. It never
+moves past `window_start`, so the period containing the window is generated in full.
+
+It refuses to move an anchor whenever the shift cannot be proven safe:
+
+- **A day above 28 with `MONTHLY`/`YEARLY`.** `relativedelta` clamps a day the target
+  month lacks — 31 January plus 44 months is 30 September — and dateutil derives the day
+  from `DTSTART` when there is no explicit `BYMONTHDAY`, so the clamp moves every later
+  occurrence permanently. `FREQ=MONTHLY;INTERVAL=2` anchored 2021-07-31 went from
+  contributing nothing to contributing 2026-11-30, **inventing busy time**. Monthly and
+  yearly series are cheap to expand naively, so refusing them costs nothing worth having.
+- **A `COUNT`-limited rule**, whose occurrences are positional and would gain phantom ones
+  past the end of the series.
+- **An unrecognised or missing `FREQ`.**
+- **A non-positive or unreadable `INTERVAL`.** `INTERVAL=0` makes dateutil spin rather than
+  raise, so it must not be reasoned about at all; `INTERVAL=abc` is equally unusable, which
+  is why the warning says "unusable" rather than naming a zero that may not be there.
+
+The estimate floors against the **longest** a period can be, so the guess falls short of the
+window and the forward correction closes the gap.
+
+That "falls short" holds only while `window_start - anchor` is wall-clock, which CPython does
+solely when both operands share one tzinfo **object**. Handed a window in another zone the
+subtraction measures absolute time, and across a DST change the estimate lands *past* the
+window — a New York anchor with a UTC window start advanced an hour too far and silently
+dropped an occurrence. `_expand_recurrence` normalises, so only a direct call reaches it, but
+an invariant its callers have to maintain is not an invariant: the back-off loop stays, and is
+tested against exactly that case.
+
+Correctness is asserted by equivalence rather than by expected dates: `TestAdvanceAnchor` expands
+22 rule shapes across 9 anchor dates and 5 windows both ways and requires identical output.
+
+The anchor dates matter as much as the rules. The first version stopped at day 29 and passed
+132/132 while the clamping bug above was live — the matrix has to include days 30 and 31, and
+windows in months of differing length, or it proves only that the shapes someone thought of
+work.
+
+Measured 2026-08-28. On the live feeds this saves **0.8ms** — they hold 12 series, none finer than
+weekly, and Google pre-expands so contributes none at all. The value is in bounding the worst
+case: `FREQ=MINUTELY` anchored 3.7 years back goes from 1.876s to 0.018s, same output.
+
 **Recurring events are expanded, and the expansion is the delicate part.**
 `walk(ICS_TAG_VEVENT)` yields only the series master, whose `DTSTART` is the *first* occurrence.
 Outlook anchors a series at the date it was created, so a long-running weekly meeting sits far

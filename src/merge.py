@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import click
 import pyfangs.telegram as tg
 import pyfangs.terminal as term
+from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
 from icalendar import Calendar
@@ -60,6 +61,37 @@ ICS_FIELD_EXDATE = "EXDATE"
 ICS_FIELD_RDATE = "RDATE"
 ICS_FIELD_RECURRENCE_ID = "RECURRENCE-ID"
 ICS_FIELD_UID = "UID"
+
+# February is the shortest month, so a day at or below this can never be clamped away by
+# month or year arithmetic. Above it, the anchor shift is refused.
+SHORTEST_MONTH_DAYS = 28
+
+# The units whose arithmetic can clamp a day, and so need that refusal.
+MONTH_ALIGNED_UNITS = frozenset({"months", "years"})
+
+# The unit one period of each frequency advances by, for skipping ahead to the window.
+RRULE_PERIOD_UNITS = {
+    "SECONDLY": "seconds",
+    "MINUTELY": "minutes",
+    "HOURLY": "hours",
+    "DAILY": "days",
+    "WEEKLY": "weeks",
+    "MONTHLY": "months",
+    "YEARLY": "years",
+}
+
+# The longest a single period of each unit can be, in seconds. Deliberately the upper
+# bound rather than an average: it makes the anchor estimate fall short of the window, so
+# the correction only ever moves forward.
+LONGEST_PERIOD_SECONDS = {
+    "seconds": 1,
+    "minutes": 60,
+    "hours": 3600,
+    "days": 86400,
+    "weeks": 604800,
+    "months": 31 * 86400,
+    "years": 366 * 86400,
+}
 
 # TRANSP means different things in practice depending on who wrote the feed, so
 # the same value cannot be interpreted the same way everywhere.
@@ -1146,6 +1178,96 @@ def _additional_occurrences(file_event, anchor: datetime) -> list[datetime]:
     return extras
 
 
+def _rrule_parts(rule_text: str) -> dict[str, str]:
+    """The RRULE's key=value pairs, upper-cased."""
+    parts = {}
+    for chunk in rule_text.split(";"):
+        key, _, value = chunk.partition("=")
+        if key:
+            parts[key.strip().upper()] = value.strip().upper()
+    return parts
+
+
+def _has_usable_interval(rule_text: str) -> bool:
+    """False when INTERVAL is zero, negative, or unreadable.
+
+    Covers more than the hang: `INTERVAL=abc` is equally unusable, which is why the
+    caller's warning says "unusable" rather than naming a zero that may not be there.
+
+    `rrulestr` accepts `INTERVAL=0` and then never terminates, so it has to be rejected
+    before the rule is built: an infinite loop is not something an `except` can catch,
+    and the whole scheduled run hangs.
+    """
+    raw = _rrule_parts(rule_text).get("INTERVAL")
+    if raw is None:
+        return True
+    try:
+        return int(raw) >= 1
+    except ValueError:
+        return False
+
+
+def _advance_anchor(rule_text: str, anchor: datetime, window_start: datetime) -> datetime:
+    """Move the anchor forward to the last period boundary at or before the window.
+
+    `rule.between()` iterates from DTSTART and discards everything earlier, so the cost
+    is proportional to the anchor's age rather than the window. Outlook anchors a series
+    at its creation date, so that gap is routinely years.
+
+    Advancing by a whole number of periods leaves the recurrence *lattice* unchanged:
+    period boundaries stay where they were, so `BYDAY`, `BYMONTHDAY` and `BYSETPOS` --
+    which are evaluated relative to those boundaries -- still select the same dates. It
+    stops at or before `window_start`, never past it, so the period containing the
+    window is still generated in full.
+
+    Returns the anchor unchanged whenever the shift cannot be proven safe:
+
+    - **`COUNT`** makes occurrences positional. Skipping ahead would change which ones
+      are "the first N", inventing occurrences past the end of the series.
+    - An unrecognised or missing `FREQ`, or a non-positive `INTERVAL`, means the period
+      is unknown, and guessing it is exactly how an optimisation starts dropping events.
+    """
+    parts = _rrule_parts(rule_text)
+    if "COUNT" in parts:
+        return anchor
+    unit = RRULE_PERIOD_UNITS.get(parts.get("FREQ", ""))
+    if unit is None:
+        return anchor
+    try:
+        interval = int(parts.get("INTERVAL", "1"))
+    except ValueError:
+        return anchor
+    if interval < 1 or anchor >= window_start:
+        return anchor
+    # relativedelta clamps a day the target month lacks -- 31 January plus 44 months is
+    # 30 September, not the 31st -- and for MONTHLY/YEARLY without an explicit
+    # BYMONTHDAY, dateutil derives the day from DTSTART. The clamp therefore moves every
+    # later occurrence permanently: FREQ=MONTHLY;INTERVAL=2 anchored 2021-07-31 went
+    # from producing nothing in a window to producing 2026-11-30, inventing busy time.
+    # Days at or below 28 can never clamp, so only the tail is refused -- and monthly or
+    # yearly series are cheap to expand naively anyway, so nothing worth having is lost.
+    if unit in MONTH_ALIGNED_UNITS and anchor.day > SHORTEST_MONTH_DAYS:
+        return anchor
+
+    step = relativedelta(**{unit: interval})
+    # Estimate against the longest a period can be, so the guess falls short of the
+    # window and the forward correction below closes the gap.
+    #
+    # "Falls short" holds only while the subtraction is wall-clock, which CPython does
+    # solely when both operands share one tzinfo *object*. Handed a window in another
+    # zone the subtraction measures absolute time instead, and across a DST change the
+    # estimate lands past the window: an NY anchor with a UTC window start advanced an
+    # hour too far and silently dropped an occurrence. `_expand_recurrence` normalises,
+    # so only a direct call can hit it -- but an invariant the callers have to maintain
+    # is not an invariant, so the back-off stays and is tested.
+    periods = int((window_start - anchor).total_seconds() // (LONGEST_PERIOD_SECONDS[unit] * interval))
+    while periods > 0 and anchor + step * periods > window_start:
+        periods -= 1
+    while anchor + step * (periods + 1) <= window_start:
+        periods += 1
+    return anchor + step * periods if periods else anchor
+
+
 def _expand_recurrence(
     file_event, uid: str, overrides: set[tuple[str, datetime]], window_start: datetime, window_end: datetime
 ) -> list[tuple[datetime, datetime]] | None:
@@ -1176,10 +1298,19 @@ def _expand_recurrence(
         # subtracting those raises. Left outside, that escaped every guard here and
         # aborted the whole run -- the opposite of what this fallback exists for.
         duration = finish - anchor
-        rule = rrulestr(rule_field.to_ical().decode(), dtstart=anchor)
+        rule_text = rule_field.to_ical().decode()
+        if not _has_usable_interval(rule_text):
+            # Returning None makes the caller fall back to the master's own occurrence,
+            # so the meeting still contributes rather than vanishing.
+            logger.warning("recurrence rule has an unusable INTERVAL; contributing its original occurrence only")
+            return None
         # Expand in the series' own frame; comparing across offsets needs matching awareness.
         lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)
         upper = window_end.astimezone(anchor.tzinfo) if anchor.tzinfo else window_end.replace(tzinfo=None)
+        # Skipping the anchor forward avoids generating and discarding every occurrence
+        # between the series' creation and the window. The original anchor is kept: it
+        # is itself an occurrence, and the check below still needs it.
+        rule = rrulestr(rule_text, dtstart=_advance_anchor(rule_text, anchor, lower))
         occurrences = list(rule.between(lower, upper, inc=True))
         # DTSTART is the first occurrence even when it does not match the pattern --
         # dateutil deliberately omits it there, which silently drops a real meeting.
