@@ -194,7 +194,8 @@ class TestCalDavCalendarService:
             )
         )
 
-        assert calendar.saved and "SUMMARY:standup" in calendar.saved[0]
+        assert len(calendar.saved) == 1, "exactly one event should have been written"
+        assert "SUMMARY:standup" in calendar.saved[0]
 
     def test_remove_event_deletes_by_url(self, monkeypatch):
         deleted = []

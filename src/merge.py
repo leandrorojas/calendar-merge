@@ -62,6 +62,8 @@ ICLOUD_FIELD_PARENT_GUID = "pGuid"
 # default so nothing changes for an account where password sign-in still works.
 ENV_ICLOUD_APP_PASSWORD = "ICLOUD_APP_PASSWORD"
 CALDAV_URL = "https://caldav.icloud.com/"
+# RFC 5545 UTC form: the trailing Z is the marker, so the value must already be UTC.
+ICS_UTC_DATETIME_FORMAT = "%Y%m%dT%H%M%SZ"
 YAML_SETTING_DESTINATION_CALENDAR = "destination_calendar"
 
 ICS_TAG_VEVENT = "VEVENT"
@@ -1733,9 +1735,9 @@ def _build_ics_event(event) -> str:
     and a UTC start and end, and an ICS document that small is easier to verify by
     reading than a library call chain.
     """
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    start = convert_to_utc(event.start_date).strftime("%Y%m%dT%H%M%SZ")
-    end = convert_to_utc(event.end_date).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime(ICS_UTC_DATETIME_FORMAT)
+    start = convert_to_utc(event.start_date).strftime(ICS_UTC_DATETIME_FORMAT)
+    end = convert_to_utc(event.end_date).strftime(ICS_UTC_DATETIME_FORMAT)
     return (
         "BEGIN:VCALENDAR\r\n"
         "VERSION:2.0\r\n"
