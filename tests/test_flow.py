@@ -311,6 +311,24 @@ class TestLoadIcloudEvents:
 
         assert len(events) == 1
 
+    def test_the_icloud_read_window_is_day_aligned(self, monkeypatch):
+        """Both bounds must cover whole days, whatever time the run starts.
+
+        pyicloud formats them with "%Y-%m-%d" and so discards the time of day; CalDAV
+        puts the exact instant into an RFC 4791 time-range filter. A window built from
+        `datetime.today()` therefore begins mid-afternoon on the CalDAV backend, which
+        hid the events the merge had written that same morning -- reconciliation found
+        no match and added a second copy on every run.
+        """
+        monkeypatch.setattr(merge, "datetime", _clock_pinned_to(datetime(2026, 8, 31, 16, 45, 30)))
+        service = FakeCalendarService()
+
+        merge._load_icloud_events(icloud_service(service), 5, ["5", "6"])
+
+        start, end = service.window
+        assert (start.hour, start.minute, start.second) == (0, 0, 0), f"window starts mid-day: {start}"
+        assert (end.hour, end.minute, end.second) == (23, 59, 59), f"window ends mid-day: {end}"
+
     def test_global_skip_days_still_shape_the_window(self, monkeypatch):
         """future_events_days is global and counts only non-skipped days.
 

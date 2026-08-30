@@ -16,6 +16,8 @@ from pyicloud.services.calendar import EventObject
 
 import merge
 
+WINDOW = (datetime(2026, 1, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC))
+
 
 def ics_event(summary="standup", start="20260901T130000Z", end="20260901T133000Z", all_day=False):
     """A one-VEVENT calendar, as caldav hands back from a search."""
@@ -77,11 +79,22 @@ class FakeDavCalendar:
         self.saved.append(ics)
 
 
+class FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+
 class FakeDavClient:
-    def __init__(self, calendars=(), principal_raises=False):
+    def __init__(self, calendars=(), principal_raises=False, delete_status=204):
         self._calendars = list(calendars)
         self._principal_raises = principal_raises
+        self._delete_status = delete_status
         self.requested_urls: list[str] = []
+        self.deleted: list[str] = []
+
+    def delete(self, url):
+        self.deleted.append(url)
+        return FakeResponse(self._delete_status)
 
     def principal(self):
         if self._principal_raises:
@@ -113,7 +126,7 @@ class TestCalDavCalendarService:
     def test_get_events_reports_pyicloud_field_shape(self):
         client = FakeDavClient([FakeDavCalendar("https://x/fam/", found=[FakeFound("https://x/fam/1.ics")])])
 
-        (event,) = merge.CalDavCalendarService(client).get_events()
+        (event,) = merge.CalDavCalendarService(client).get_events(*WINDOW)
 
         assert event == {
             "startDate": [0, 2026, 9, 1, 13, 0],
@@ -144,7 +157,7 @@ class TestCalDavCalendarService:
             ]
         )
 
-        events = merge.CalDavCalendarService(client).get_events()
+        events = merge.CalDavCalendarService(client).get_events(*WINDOW)
 
         assert {e["pGuid"] for e in events} == {"https://x/a/", "https://x/b/"}
 
@@ -153,7 +166,7 @@ class TestCalDavCalendarService:
         found = FakeFound("https://x/fam/1.ics", ics_event(all_day=True))
         client = FakeDavClient([FakeDavCalendar("https://x/fam/", found=[found])])
 
-        assert merge.CalDavCalendarService(client).get_events() == [{"allDay": True}]
+        assert merge.CalDavCalendarService(client).get_events(*WINDOW) == [{"allDay": True}]
 
     def test_an_unparseable_event_is_skipped_not_fatal(self):
         """One bad event must not cost the whole sync."""
@@ -166,7 +179,7 @@ class TestCalDavCalendarService:
             ]
         )
 
-        events = merge.CalDavCalendarService(client).get_events()
+        events = merge.CalDavCalendarService(client).get_events(*WINDOW)
 
         assert [e["guid"] for e in events] == ["https://x/fam/1.ics"]
 
@@ -179,7 +192,7 @@ class TestCalDavCalendarService:
         )
         client = FakeDavClient([FakeDavCalendar("https://x/fam/", found=[FakeFound("https://x/f/1.ics", no_end)])])
 
-        assert merge.CalDavCalendarService(client).get_events() == []
+        assert merge.CalDavCalendarService(client).get_events(*WINDOW) == []
 
     def test_add_event_writes_to_the_collection_named_by_pguid(self):
         calendar = FakeDavCalendar("https://x/fam/")
@@ -197,22 +210,37 @@ class TestCalDavCalendarService:
         assert len(calendar.saved) == 1, "exactly one event should have been written"
         assert "SUMMARY:standup" in calendar.saved[0]
 
-    def test_remove_event_deletes_by_url(self, monkeypatch):
-        deleted = []
-
-        class FakeEvent:
-            def __init__(self, client, url):
-                self.url = url
-
-            def delete(self):
-                deleted.append(self.url)
-
-        monkeypatch.setattr(merge, "CalDavEvent", FakeEvent)
-        service = merge.CalDavCalendarService(FakeDavClient([FakeDavCalendar("https://x/fam/")]))
+    def test_remove_event_deletes_by_url(self):
+        client = FakeDavClient([FakeDavCalendar("https://x/fam/")])
+        service = merge.CalDavCalendarService(client)
 
         service.remove_event(EventObject(pguid="https://x/fam/", guid="https://x/fam/1.ics", title="standup"))
 
-        assert deleted == ["https://x/fam/1.ics"]
+        assert client.deleted == ["https://x/fam/1.ics"]
+
+    def test_a_404_is_reported_as_already_gone_not_as_a_deletion(self):
+        """caldav treats 404 as success, which would inflate the deleted tally.
+
+        CLAUDE.md keeps "already gone" apart from "deleted" so a systemic fault
+        404-ing every delete cannot look like a run that removed events. The raised
+        error must be classified by the same predicate the pyicloud path uses.
+        """
+        client = FakeDavClient([FakeDavCalendar("https://x/fam/")], delete_status=404)
+        service = merge.CalDavCalendarService(client)
+
+        with pytest.raises(Exception) as caught:
+            service.remove_event(EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup"))
+
+        assert merge._is_missing_event_error(caught.value), "must classify as already gone"
+
+    def test_any_other_delete_failure_still_stops_the_run(self):
+        client = FakeDavClient([FakeDavCalendar("https://x/fam/")], delete_status=500)
+        service = merge.CalDavCalendarService(client)
+
+        with pytest.raises(RuntimeError, match="server returned 500") as caught:
+            service.remove_event(EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup"))
+
+        assert not merge._is_missing_event_error(caught.value)
 
 
 class TestEventCalendarFilter:
@@ -239,7 +267,7 @@ class TestEventCalendarFilter:
         todo = FakeDavCalendar("https://x/todo/", "Reminders ⚠️", components=["VTODO"])
         client = FakeDavClient([FakeDavCalendar("https://x/fam/"), todo])
 
-        merge.CalDavCalendarService(client).get_events()
+        merge.CalDavCalendarService(client).get_events(*WINDOW)
 
         assert todo.searched is None, "a VTODO collection must never be searched"
 
@@ -360,6 +388,20 @@ class TestAuthenticateBackend:
         monkeypatch.setattr(merge, "_authenticate_icloud", lambda: "pyicloud")
 
         assert merge._authenticate_backend() == "pyicloud"
+
+    def test_a_missing_username_names_the_variable(self, monkeypatch):
+        """str(None) is "None" -- a valid-looking username Apple would simply reject.
+
+        Setting only the app password is a plausible reading of the README, and the
+        run then failed as a 401 wrapped in "Unable to start iCloud CalDAV service"
+        rather than saying which variable was absent.
+        """
+        monkeypatch.setenv(merge.ENV_ICLOUD_APP_PASSWORD, "abcd-efgh-ijkl-mnop")
+        monkeypatch.delenv(merge.ENV_ICLOUD_USER, raising=False)
+        monkeypatch.setattr(merge, "_authenticate_caldav", lambda *a: pytest.fail("must not attempt to connect"))
+
+        with pytest.raises(RuntimeError, match=merge.ENV_ICLOUD_USER):
+            merge._authenticate_backend()
 
     def test_an_empty_app_password_does_not_select_caldav(self, monkeypatch):
         """An unset variable and a blank one mean the same thing to a shell."""

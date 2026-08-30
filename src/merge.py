@@ -15,13 +15,12 @@ from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import click
 import pyfangs.telegram as tg
 import pyfangs.terminal as term
-from caldav.calendarobjectresource import Event as CalDavEvent
 from caldav.davclient import DAVClient
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
@@ -62,6 +61,8 @@ ICLOUD_FIELD_PARENT_GUID = "pGuid"
 # default so nothing changes for an account where password sign-in still works.
 ENV_ICLOUD_APP_PASSWORD = "ICLOUD_APP_PASSWORD"
 CALDAV_URL = "https://caldav.icloud.com/"
+# 200 and 204 both mean deleted; caldav itself also accepts 404, which we do not.
+CALDAV_DELETE_OK_STATUSES = frozenset({200, 204})
 # RFC 5545 UTC form: the trailing Z is the marker, so the value must already be UTC.
 ICS_UTC_DATETIME_FORMAT = "%Y%m%dT%H%M%SZ"
 YAML_SETTING_DESTINATION_CALENDAR = "destination_calendar"
@@ -977,6 +978,10 @@ def _calculate_future_date(start_date: datetime, future_days: int, skip_days: li
     return current_date
 
 
+def _start_of_day(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, dt.day, 0, 0, 0, tzinfo=dt.tzinfo)
+
+
 def _end_of_day(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=dt.tzinfo)
 
@@ -1548,9 +1553,14 @@ def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem, str | None]:
     # Optional, and read through a local catch for the reason documented on
     # _resolve_source_skip_days: YamlHelper raises for an absent setting.
     try:
-        destination = str(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_DESTINATION_CALENDAR))
-    except Exception:
-        destination = ""
+        # YamlHelper.get raises only for a *missing* key, so `destination_calendar:`
+        # left blank returns None -- and str(None) is "None", which is truthy and would
+        # fail the run looking for a calendar by that name. Omitting the key and
+        # leaving it empty must mean the same thing.
+        configured = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_DESTINATION_CALENDAR)
+    except YamlError:
+        configured = None
+    destination = str(configured).strip() if configured is not None else ""
     term.print_done()
     return yaml_helper, future_event_days, skip_days, fs, destination or None
 
@@ -1582,6 +1592,16 @@ def _disable_automatic_2fa_requests() -> None:
         setattr(PyiCloudService, PYICLOUD_AUTO_2FA_METHOD, lambda self: None)
 
 
+class CalDavEventMissing(Exception):
+    """A DELETE that reported the event was already gone.
+
+    Carries `code` so `_is_missing_event_error` reads it the same way it reads
+    pyicloud's own exception, keeping one classification for both backends.
+    """
+
+    code = HTTP_NOT_FOUND
+
+
 class DavClientLike(Protocol):
     """The part of `caldav.DAVClient` this adapter actually uses.
 
@@ -1594,6 +1614,8 @@ class DavClientLike(Protocol):
     def principal(self) -> Any: ...
 
     def calendar(self, **kwargs: Any) -> Any: ...
+
+    def delete(self, url: str) -> Any: ...
 
 
 class CalDavCalendarService:
@@ -1649,7 +1671,7 @@ class CalDavCalendarService:
                 keep.append(calendar)
         return keep
 
-    def get_events(self, from_dt: datetime | None = None, to_dt: datetime | None = None) -> list[dict]:
+    def get_events(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
         """Timed events in the window, across every collection.
 
         Datetimes are normalised to UTC and reported with `tz` set to UTC, so the
@@ -1670,11 +1692,22 @@ class CalDavCalendarService:
         calendar.save_event(_build_ics_event(event))
 
     def remove_event(self, event) -> None:
-        """Delete by URL, which is what `get_events` handed out as the guid."""
-        # cast, not a widened annotation: in production this *is* a DAVClient, and the
-        # protocol exists so tests can pass a fake -- which reaches here only with
-        # CalDavEvent itself patched out.
-        CalDavEvent(client=cast(DAVClient, self._client), url=event.guid).delete()
+        """Delete by URL, which is what `get_events` handed out as the guid.
+
+        The DELETE is issued directly rather than through `caldav.Event.delete()`,
+        which treats 404 as success and returns nothing -- so an event already removed
+        from another device would be tallied as a deletion this run performed.
+        CLAUDE.md keeps those apart deliberately: a systemic fault 404-ing every delete
+        must not look like a run that genuinely removed events. Raising here with a
+        `code` lets `_is_missing_event_error` classify it exactly as it does on the
+        pyicloud path.
+        """
+        response = self._client.delete(event.guid)
+        status = getattr(response, "status", None)
+        if status == HTTP_NOT_FOUND:
+            raise CalDavEventMissing(f"Event already gone: {event.guid}")
+        if status not in CALDAV_DELETE_OK_STATUSES:
+            raise RuntimeError(f"Unable to delete event, server returned {status}")
 
 
 class CalDavService:
@@ -1821,7 +1854,7 @@ def _select_destination_calendar(calendars: list[dict], destination: str | None)
     return str(guid)
 
 
-def _authenticate_backend():
+def _authenticate_backend() -> "PyiCloudService | CalDavService":
     """Whichever iCloud backend the credentials in `.env` select.
 
     An `ICLOUD_APP_PASSWORD` chooses CalDAV, because Apple restricted password sign-in
@@ -1830,13 +1863,22 @@ def _authenticate_backend():
     is a second backend, not a replacement, and falling back is one line in `.env`.
     """
     app_password = os.getenv(ENV_ICLOUD_APP_PASSWORD)
-    if app_password:
-        return _authenticate_caldav(str(os.getenv(ENV_ICLOUD_USER)), app_password)
-    return _authenticate_icloud()
+    if not app_password:
+        return _authenticate_icloud()
+    username = os.getenv(ENV_ICLOUD_USER)
+    if not username:
+        # str(None) is "None", a perfectly valid-looking username, so without this the
+        # run fails as a 401 from Apple instead of naming the variable that is missing.
+        # Setting only the app password is a plausible reading of the README.
+        raise RuntimeError(f"{ENV_ICLOUD_USER} is required to authenticate over CalDAV")
+    return _authenticate_caldav(username, app_password)
 
 
 def _load_icloud_events(
-    icloud_service: PyiCloudService, future_event_days: int, skip_days: list[str], destination: str | None = None
+    icloud_service: "PyiCloudService | CalDavService",
+    future_event_days: int,
+    skip_days: list[str],
+    destination: str | None = None,
 ) -> tuple:
     """Fetch calendar GUID, load iCloud events, compute date range.
 
@@ -1859,8 +1901,20 @@ def _load_icloud_events(
         term.print_failed()
         raise
 
-    filter_start = datetime.today()
-    filter_end = _calculate_future_date(filter_start, future_event_days, skip_days)
+    # Both bounds are day-aligned, and that is a correctness requirement rather than
+    # tidiness. `datetime.today()` carries the run's time of day, which pyicloud discards
+    # -- it formats both bounds with "%Y-%m-%d", so Apple returns the whole first and
+    # last day whatever time is passed. CalDAV does not: `search()` puts the exact
+    # instant into an RFC 4791 time-range filter.
+    #
+    # So under CalDAV a 13:00 run could not see the events it had itself written that
+    # morning, while the source side still offered them -- `_parse_source_events` is
+    # handed midnight through end-of-day. Reconciliation found no match and added a
+    # second copy, every run, all day. Measured against the live calendar: three
+    # `[MCP] meet/parat` blocks on a Tuesday were visible from 00:00 and invisible from
+    # 13:00.
+    filter_start = _start_of_day(datetime.today())
+    filter_end = _end_of_day(_calculate_future_date(filter_start, future_event_days, skip_days))
 
     try:
         all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
