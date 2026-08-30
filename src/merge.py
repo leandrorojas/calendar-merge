@@ -59,26 +59,17 @@ ICS_FIELD_MS_BUSY_STATUS = "X-MICROSOFT-CDO-BUSYSTATUS"
 ICS_FIELD_RRULE = "RRULE"
 ICS_FIELD_EXDATE = "EXDATE"
 ICS_FIELD_RDATE = "RDATE"
+ICS_FIELD_RECURRENCE_ID = "RECURRENCE-ID"
+ICS_FIELD_UID = "UID"
 
-# The unit one period of each frequency advances by, for skipping ahead to the window.
-# The longest a single period of each unit can be, in seconds. Deliberately the upper
-# bound rather than an average: it guarantees the anchor estimate undershoots, so the
-# correction only ever moves forward and can never skip past the window.
-# February is the shortest month, so a day at or below this can never be clamped away
-# by month or year arithmetic. Above it, the anchor shift is refused.
+# February is the shortest month, so a day at or below this can never be clamped away by
+# month or year arithmetic. Above it, the anchor shift is refused.
 SHORTEST_MONTH_DAYS = 28
+
+# The units whose arithmetic can clamp a day, and so need that refusal.
 MONTH_ALIGNED_UNITS = frozenset({"months", "years"})
 
-LONGEST_PERIOD_SECONDS = {
-    "seconds": 1,
-    "minutes": 60,
-    "hours": 3600,
-    "days": 86400,
-    "weeks": 604800,
-    "months": 31 * 86400,
-    "years": 366 * 86400,
-}
-
+# The unit one period of each frequency advances by, for skipping ahead to the window.
 RRULE_PERIOD_UNITS = {
     "SECONDLY": "seconds",
     "MINUTELY": "minutes",
@@ -88,8 +79,19 @@ RRULE_PERIOD_UNITS = {
     "MONTHLY": "months",
     "YEARLY": "years",
 }
-ICS_FIELD_RECURRENCE_ID = "RECURRENCE-ID"
-ICS_FIELD_UID = "UID"
+
+# The longest a single period of each unit can be, in seconds. Deliberately the upper
+# bound rather than an average: it makes the anchor estimate fall short of the window, so
+# the correction only ever moves forward.
+LONGEST_PERIOD_SECONDS = {
+    "seconds": 1,
+    "minutes": 60,
+    "hours": 3600,
+    "days": 86400,
+    "weeks": 604800,
+    "months": 31 * 86400,
+    "years": 366 * 86400,
+}
 
 # TRANSP means different things in practice depending on who wrote the feed, so
 # the same value cannot be interpreted the same way everywhere.
@@ -1187,7 +1189,10 @@ def _rrule_parts(rule_text: str) -> dict[str, str]:
 
 
 def _has_usable_interval(rule_text: str) -> bool:
-    """False when INTERVAL would make dateutil loop rather than raise.
+    """False when INTERVAL is zero, negative, or unreadable.
+
+    Covers more than the hang: `INTERVAL=abc` is equally unusable, which is why the
+    caller's warning says "unusable" rather than naming a zero that may not be there.
 
     `rrulestr` accepts `INTERVAL=0` and then never terminates, so it has to be rejected
     before the rule is built: an infinite loop is not something an `except` can catch,
@@ -1245,11 +1250,19 @@ def _advance_anchor(rule_text: str, anchor: datetime, window_start: datetime) ->
         return anchor
 
     step = relativedelta(**{unit: interval})
-    # Estimate against the longest a period can be, so the guess can only fall short and
-    # a forward correction is enough. Flooring against an *average* month would make
-    # overshoot possible in principle and unreachable in practice, and a branch that
-    # cannot be exercised is a branch that is never known to be right.
+    # Estimate against the longest a period can be, so the guess falls short of the
+    # window and the forward correction below closes the gap.
+    #
+    # "Falls short" holds only while the subtraction is wall-clock, which CPython does
+    # solely when both operands share one tzinfo *object*. Handed a window in another
+    # zone the subtraction measures absolute time instead, and across a DST change the
+    # estimate lands past the window: an NY anchor with a UTC window start advanced an
+    # hour too far and silently dropped an occurrence. `_expand_recurrence` normalises,
+    # so only a direct call can hit it -- but an invariant the callers have to maintain
+    # is not an invariant, so the back-off stays and is tested.
     periods = int((window_start - anchor).total_seconds() // (LONGEST_PERIOD_SECONDS[unit] * interval))
+    while periods > 0 and anchor + step * periods > window_start:
+        periods -= 1
     while anchor + step * (periods + 1) <= window_start:
         periods += 1
     return anchor + step * periods if periods else anchor
@@ -1289,7 +1302,7 @@ def _expand_recurrence(
         if not _has_usable_interval(rule_text):
             # Returning None makes the caller fall back to the master's own occurrence,
             # so the meeting still contributes rather than vanishing.
-            logger.warning("recurrence rule has a non-positive INTERVAL; contributing its original occurrence only")
+            logger.warning("recurrence rule has an unusable INTERVAL; contributing its original occurrence only")
             return None
         # Expand in the series' own frame; comparing across offsets needs matching awareness.
         lower = window_start.astimezone(anchor.tzinfo) if anchor.tzinfo else window_start.replace(tzinfo=None)

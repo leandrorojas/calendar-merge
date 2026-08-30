@@ -380,15 +380,24 @@ It refuses to move an anchor whenever the shift cannot be proven safe:
   from `DTSTART` when there is no explicit `BYMONTHDAY`, so the clamp moves every later
   occurrence permanently. `FREQ=MONTHLY;INTERVAL=2` anchored 2021-07-31 went from
   contributing nothing to contributing 2026-11-30, **inventing busy time**. Monthly and
-  yearly series are cheap to expand naively, so refusing them costs nothing worth having. a **`COUNT`**-limited rule,
-whose occurrences are positional and would gain phantom ones past the end of the series; an
-unrecognised or missing `FREQ`; a non-positive `INTERVAL` (`INTERVAL=0` makes dateutil itself
-spin, so it must not be reasoned about at all).
+  yearly series are cheap to expand naively, so refusing them costs nothing worth having.
+- **A `COUNT`-limited rule**, whose occurrences are positional and would gain phantom ones
+  past the end of the series.
+- **An unrecognised or missing `FREQ`.**
+- **A non-positive or unreadable `INTERVAL`.** `INTERVAL=0` makes dateutil spin rather than
+  raise, so it must not be reasoned about at all; `INTERVAL=abc` is equally unusable, which
+  is why the warning says "unusable" rather than naming a zero that may not be there.
 
-The estimate floors against the **longest** a period can be, so it can only undershoot and the
-correction only moves forward. Flooring against an average month instead makes overshoot possible
-in principle and unreachable in practice — a branch that cannot be exercised is a branch that is
-never known to be right.
+The estimate floors against the **longest** a period can be, so the guess falls short of the
+window and the forward correction closes the gap.
+
+That "falls short" holds only while `window_start - anchor` is wall-clock, which CPython does
+solely when both operands share one tzinfo **object**. Handed a window in another zone the
+subtraction measures absolute time, and across a DST change the estimate lands *past* the
+window — a New York anchor with a UTC window start advanced an hour too far and silently
+dropped an occurrence. `_expand_recurrence` normalises, so only a direct call reaches it, but
+an invariant its callers have to maintain is not an invariant: the back-off loop stays, and is
+tested against exactly that case.
 
 Correctness is asserted by equivalence rather than by expected dates: `TestAdvanceAnchor` expands
 22 rule shapes across 9 anchor dates and 5 windows both ways and requires identical output.

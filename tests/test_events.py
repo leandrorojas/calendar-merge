@@ -720,6 +720,28 @@ class TestAdvanceAnchor:
     shape nobody anticipated is still covered.
     """
 
+    def test_never_advances_past_a_window_in_another_timezone(self):
+        """The advanced anchor must land on or before the window, whatever zone it is in.
+
+        `(window_start - anchor)` is wall-clock only while both share one tzinfo object,
+        which is what makes the estimate undershoot. Given a UTC window against a New
+        York anchor it measures absolute time, and across a DST change the estimate
+        overshoots by the hour: this rule expanded to 6 occurrences instead of 7 before
+        the back-off was restored.
+        """
+        new_york = ZoneInfo("America/New_York")
+        anchor = datetime(2023, 7, 1, 9, 0, tzinfo=new_york)  # EDT, UTC-4
+        window_start = datetime(2024, 1, 15, 9, 0, tzinfo=new_york)  # EST, UTC-5
+        window_end = window_start + timedelta(hours=6)
+
+        for lower in (window_start, window_start.astimezone(UTC)):
+            advanced = merge._advance_anchor("FREQ=HOURLY", anchor, lower)
+
+            assert advanced <= lower, "the advanced anchor may undershoot, never overshoot"
+            assert rrulestr("FREQ=HOURLY", dtstart=advanced).between(lower, window_end, inc=True) == rrulestr(
+                "FREQ=HOURLY", dtstart=anchor
+            ).between(lower, window_end, inc=True)
+
     @pytest.mark.parametrize("rule_text", RULE_SHAPES)
     @pytest.mark.parametrize("anchor_date", ANCHOR_DATES)
     @pytest.mark.parametrize("window", WINDOWS)
