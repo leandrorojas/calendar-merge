@@ -53,7 +53,7 @@ class TestLoadConfig:
         monkeypatch.setattr(merge, "FileSystem", lambda: FakeFileSystem(tmp_path))
         monkeypatch.setattr(merge, "YamlHelper", lambda path: FakeYamlHelper(config_values()))
 
-        yaml_helper, future_days, skip_days, fs = merge._load_config()
+        yaml_helper, future_days, skip_days, fs, _destination = merge._load_config()
 
         assert future_days == 5
         assert skip_days == ["5", "6"]
@@ -65,7 +65,7 @@ class TestLoadConfig:
         monkeypatch.setattr(merge, "FileSystem", lambda: FakeFileSystem(tmp_path))
         monkeypatch.setattr(merge, "YamlHelper", lambda path: FakeYamlHelper(config_values(future_days="7")))
 
-        _, future_days, _, _ = merge._load_config()
+        _, future_days, _, _, _ = merge._load_config()
 
         assert future_days == 7
 
@@ -810,13 +810,13 @@ class FlowSpy:
         monkeypatch.setattr(
             merge,
             "_load_config",
-            lambda: (FakeYamlHelper(config_values()), 5, ["5", "6"], FakeFileSystem(tmp_path)),
+            lambda: (FakeYamlHelper(config_values()), 5, ["5", "6"], FakeFileSystem(tmp_path), None),
         )
-        monkeypatch.setattr(merge, "_authenticate_icloud", lambda: fake_api())
+        monkeypatch.setattr(merge, "_authenticate_backend", lambda: fake_api())
         monkeypatch.setattr(
             merge,
             "_load_icloud_events",
-            lambda service, days, skip: (
+            lambda service, days, skip, destination=None: (
                 FakeCalendarService(),
                 "cal-guid",
                 [],
@@ -1112,12 +1112,12 @@ class TestMain:
         values[(SOURCE_1, merge.YAML_SETTING_SKIP_DAYS)] = "0"
 
         helper = FakeYamlHelper(values)
-        monkeypatch.setattr(merge, "_load_config", lambda: (helper, 5, ["5", "6"], FakeFileSystem(tmp_path)))
-        monkeypatch.setattr(merge, "_authenticate_icloud", lambda: fake_api())
+        monkeypatch.setattr(merge, "_load_config", lambda: (helper, 5, ["5", "6"], FakeFileSystem(tmp_path), None))
+        monkeypatch.setattr(merge, "_authenticate_backend", lambda: fake_api())
         monkeypatch.setattr(
             merge,
             "_load_icloud_events",
-            lambda service, days, skip: (
+            lambda service, days, skip, destination=None: (
                 FakeCalendarService(),
                 "cal-guid",
                 [],
@@ -1199,7 +1199,9 @@ class TestMain:
             order.append("auth")
             raise RuntimeError("2FA validation failed")
 
-        monkeypatch.setattr(merge, "_authenticate_icloud", failing_auth)
+        # The backend chooser, not _authenticate_icloud: main() enters through it, so
+        # patching the pyicloud path alone would leave FlowSpy's succeeding stub in place.
+        monkeypatch.setattr(merge, "_authenticate_backend", failing_auth)
         monkeypatch.setattr("sys.argv", ["calendar-merge", "--first"])
 
         with pytest.raises(RuntimeError):

@@ -5,6 +5,11 @@ config:
   # Global: how many non-skipped days ahead to sync. Not overridable per source,
   # and it is counted using the global skip_days above.
   future_events_days: 5
+  # The iCloud calendar the merge writes into, matched on its display name
+  # exactly. Leave it out to keep the old behaviour of using whichever calendar
+  # the provider returns first -- fine with one calendar, arbitrary with several,
+  # and not necessarily the same one across backends.
+  destination_calendar: "Personal"
   # After the first failure alert, how many further failed runs before it repeats.
   # Runs hold no state between them, so without this a single outage alerts once per
   # run. 0 alerts only on the first failure and on recovery.
