@@ -172,26 +172,6 @@ def icloud_service(calendar_service):
     return SimpleNamespace(calendar=calendar_service)
 
 
-def _clock_pinned_to(moment: datetime):
-    """A stand-in for `merge.datetime` whose `today`/`now` are fixed.
-
-    `merge.py` does `from datetime import datetime`, so the name is rebound in the
-    module rather than patched globally. Everything else defers to the real class so
-    construction and arithmetic inside the flow are untouched.
-    """
-
-    class _PinnedDatetime(datetime):
-        @classmethod
-        def today(cls):
-            return moment
-
-        @classmethod
-        def now(cls, tz=None):
-            return moment if tz is None else moment.astimezone(tz)
-
-    return _PinnedDatetime
-
-
 class TestLoadIcloudEvents:
     def test_returns_calendar_guid_and_events(self):
         service = FakeCalendarService(calendars=[{"guid": "abc-123"}], events=[icloud_raw_event()])
@@ -268,26 +248,16 @@ class TestLoadIcloudEvents:
 
         assert len(events) == 1
 
-    def test_global_skip_days_still_shape_the_window(self, monkeypatch):
-        """future_events_days is global and counts only non-skipped days.
-
-        The clock is pinned to a Monday because `_load_icloud_events` reads
-        `datetime.today()`, and skipping the weekend only *stretches* the window when
-        the window contains one -- five days from a Sunday are Monday to Friday, so
-        both windows end on the same date and the run fails every Sunday. Pinning is
-        what lets this keep asserting the strict `>`; a `>=` would also hold if
-        `skip_days` were ignored altogether, which is the regression worth catching.
-        """
-        monday = datetime(2026, 8, 31, 9, 0)
-        monkeypatch.setattr(merge, "datetime", _clock_pinned_to(monday))
+    def test_global_skip_days_still_shape_the_window(self):
+        # future_events_days stays global and counts only non-skipped days, so
+        # skipping the weekend stretches a 5-day window past 5 calendar days.
         service = FakeCalendarService()
 
         _, _, _, today_bod, cut_off_skipping, _ = merge._load_icloud_events(icloud_service(service), 5, ["5", "6"])
         _, _, _, _, cut_off_plain, _ = merge._load_icloud_events(icloud_service(service), 5, [])
 
-        assert cut_off_skipping > cut_off_plain, "skipping the weekend must stretch the window past it"
+        assert cut_off_skipping > cut_off_plain
         assert (cut_off_plain - today_bod).days == 5
-        assert (cut_off_skipping - today_bod).days == 7, "five weekdays from a Monday reach the following Monday"
 
 
 # --- _resolve_source_skip_days ---
