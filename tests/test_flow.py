@@ -1,6 +1,6 @@
 """Tests for the top-level flow helpers and main()."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -172,24 +172,67 @@ def icloud_service(calendar_service):
     return SimpleNamespace(calendar=calendar_service)
 
 
-def _clock_pinned_to(moment: datetime):
+def _clock_pinned_to(moment: datetime, zone: tzinfo = UTC):
     """A stand-in for `merge.datetime` whose `today`/`now` are fixed.
 
     `merge.py` does `from datetime import datetime`, so the name is rebound in the
-    module rather than patched globally. Everything else defers to the real class so
-    construction and arithmetic inside the flow are untouched.
+    module rather than patched globally. `moment` is the naive wall clock the machine
+    is pretended to read, and `zone` the local zone it reads it in -- naming the zone
+    rather than borrowing the runner's is what keeps `now(tz)` deterministic, since a
+    naive moment cannot name an instant on its own.
+
+    The metaclass is load-bearing, not decoration. `merge.py` guards three paths with
+    `isinstance(value, datetime)` -- `_normalise_ics_datetime`, `_additional_occurrences`
+    and `_expand_recurrence` -- and a real `datetime` is *not* an instance of a subclass
+    of it. Without `__instancecheck__` delegating to the real class, pinning the clock
+    makes `_normalise_ics_datetime` return `None` for every parsed start and end, which
+    reads downstream as "this is an all-day event": every event is silently dropped and
+    the test passes against an empty calendar. That is invisible at the point of use,
+    so it is fixed here rather than written up as a caveat.
     """
 
-    class _PinnedDatetime(datetime):
+    class _PinnedMeta(type):
+        def __instancecheck__(cls, instance):
+            return isinstance(instance, datetime)
+
+    class _PinnedDatetime(datetime, metaclass=_PinnedMeta):
         @classmethod
         def today(cls):
             return moment
 
         @classmethod
         def now(cls, tz=None):
-            return moment if tz is None else moment.astimezone(tz)
+            return moment if tz is None else moment.replace(tzinfo=zone).astimezone(tz)
 
     return _PinnedDatetime
+
+
+class TestClockPinnedTo:
+    """The pin must not change anything except what the clock reads."""
+
+    def test_leaves_isinstance_checks_intact(self, monkeypatch):
+        """Pinning must not make `merge.py` stop recognising real datetimes.
+
+        `_normalise_ics_datetime` returns None for a non-datetime, which downstream
+        means "all-day event". Patching `merge.datetime` with a plain subclass makes
+        every real datetime fail the isinstance guard, so every parsed start and end is
+        discarded and a test using the pin passes against an empty calendar. Removing
+        the metaclass fails this.
+        """
+        monkeypatch.setattr(merge, "datetime", _clock_pinned_to(datetime(2026, 8, 31, 9, 0)))
+
+        assert merge._normalise_ics_datetime(datetime(2026, 9, 1, 10, 0)) is not None
+
+    def test_now_does_not_drift_with_the_runner_timezone(self, monkeypatch):
+        """`now(tz)` is anchored to the named zone, not the machine's.
+
+        A naive moment cannot name an instant, so converting it with `astimezone`
+        would read the runner's offset -- reintroducing the machine dependence the
+        pin exists to remove.
+        """
+        monkeypatch.setattr(merge, "datetime", _clock_pinned_to(datetime(2026, 8, 31, 9, 0), zone=UTC))
+
+        assert merge.datetime.now(UTC) == datetime(2026, 8, 31, 9, 0, tzinfo=UTC)
 
 
 class TestLoadIcloudEvents:
