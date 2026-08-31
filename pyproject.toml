@@ -6,7 +6,7 @@ dependencies = [
     # Imported directly by merge.py for the interactive 2FA prompts. It used to
     # arrive transitively via pyicloud, which dropped it in 2.6.5 -- so the import
     # only worked by accident and must be declared here.
-    "click>=8.4.2",
+    "click>=8.5.0",
     "dotenv>=0.9.9",
     # Imported directly by merge.py to expand RRULEs. It arrives transitively via
     # icalendar today, which is exactly how click arrived via pyicloud until it did
@@ -24,7 +24,7 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
-    "ruff>=0.16.4",
+    "ruff>=0.16.5",
 ]
 
 [build-system]
