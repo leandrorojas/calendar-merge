@@ -227,18 +227,22 @@ class TestCalDavCalendarService:
         """
         client = FakeDavClient([FakeDavCalendar("https://x/fam/")], delete_status=404)
         service = merge.CalDavCalendarService(client)
+        event = EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup")
 
-        with pytest.raises(Exception) as caught:
-            service.remove_event(EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup"))
+        with pytest.raises(merge.CalDavEventMissing) as caught:
+            service.remove_event(event)
 
+        # The type alone is not the point: the predicate is what both backends share,
+        # and it reads `code` rather than the class.
         assert merge._is_missing_event_error(caught.value), "must classify as already gone"
 
     def test_any_other_delete_failure_still_stops_the_run(self):
         client = FakeDavClient([FakeDavCalendar("https://x/fam/")], delete_status=500)
         service = merge.CalDavCalendarService(client)
+        event = EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup")
 
         with pytest.raises(RuntimeError, match="server returned 500") as caught:
-            service.remove_event(EventObject(pguid="https://x/fam/", guid="https://x/f/1.ics", title="standup"))
+            service.remove_event(event)
 
         assert not merge._is_missing_event_error(caught.value)
 
