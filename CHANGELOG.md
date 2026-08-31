@@ -4,7 +4,43 @@ All notable changes to this project will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
 tagged in git.
 
-## [Unreleased]
+## [v0.1.18] — 2026-08-31
+
+### Added
+
+- **A CalDAV backend, selected by an app-specific password.** Apple restricted password
+  sign-in on the account, which stopped the merge entirely: pyicloud speaks the iCloud web
+  API and that accepts nothing but a real account password, and pyicloud 2.6.5 has no
+  app-specific-password support at all, so no configuration could restore service.
+
+  `CalDavCalendarService` presents CalDAV through the same five operations the rest of the
+  module already speaks, so merge, reconciliation and sync logic are untouched. Setting
+  `ICLOUD_APP_PASSWORD` selects it; without that variable the pyicloud path and its 2FA
+  subsystem run exactly as before, so falling back is removing one line from `.env`.
+
+- **`config.destination_calendar`** names the calendar the merge writes into, matched on
+  display name. Previously it wrote to whichever collection the provider returned first,
+  which is nobody's decision once an account has several — and the two backends need not
+  agree on that order. Left unset, the old behaviour is kept.
+
+### Fixed
+
+- **The iCloud read window carried the run's time of day**, which pyicloud discards and
+  CalDAV does not. Under CalDAV a 13:00 run could not see the events it had written that
+  morning, while the source side still offered them, so reconciliation added a second copy
+  — every run, all day. Measured on the live calendar: three blocks on a Tuesday were
+  visible from 00:00 and invisible from 13:00. Both bounds are now day-aligned.
+
+- **A 404 on delete was counted as a real deletion under CalDAV.** `caldav` treats 404 as
+  success, so `already_gone` could never increment and a systemic fault 404-ing every
+  delete would have reported `17 added, 12 deleted` and looked healthy.
+
+- Reminder lists are no longer offered as calendars. Apple serves them from the same
+  endpoint, and since `destination_calendar` matches on title, a reminders list sharing a
+  calendar's name could otherwise be selected as the destination.
+
+- A missing `ICLOUD_USERNAME` named the missing variable instead of failing as a 401 from
+  Apple with the literal username `"None"`.
 
 ### Changed
 
