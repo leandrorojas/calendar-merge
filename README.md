@@ -44,7 +44,9 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 
 Add one entry per calendar feed.
 
-- `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
+- `ICLOUD_USERNAME`: your Apple ID. Required by **both** backends.
+- `ICLOUD_PASSWORD`: the account password. Used **only** by the pyicloud backend, and ignored when `ICLOUD_APP_PASSWORD` is set.
+- `ICLOUD_APP_PASSWORD`: optional, and setting it **changes which backend is used**. With it the merge talks to iCloud over CalDAV; without it it uses pyicloud's web API and its 2FA flow. Generate one at [appleid.apple.com](https://appleid.apple.com) under Sign-In and Security. See [Choosing a backend](#choosing-a-backend).
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
 - `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications and 2FA code entry (optional, required if you want Telegram alerts or 2FA handling).
 - `TELEGRAM_CHAT_ID`: Destination chat/channel id. Required whenever `TELEGRAM_BOT_API_TOKEN` is set. To obtain it, send any message to your bot, then call `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and look for `"chat":{"id": ...}` in the response.
@@ -54,6 +56,7 @@ Add one entry per calendar feed.
 Control which days are synced and how each calendar is labeled.
 
 - `config.skip_days`: Comma-separated numbers where `0=Monday` and `6=Sunday`. Events that start on these days are ignored (e.g., `5, 6` skips Saturday and Sunday). This is the **default** for every source; individual calendars can override it — see `source-calendar-N.skip_days` below.
+- `config.destination_calendar`: Display name of the iCloud calendar the merge writes into, matched exactly. Omit it to keep the older behaviour of writing to whichever calendar the provider returns first — fine with a single calendar, arbitrary with several, and not necessarily the same one under each backend.
 - `config.future_events_days`: Number of non-skipped days ahead to include. `_calculate_future_date()` walks forward from the current date, counting only days not in `skip_days`, so the actual calendar span depends on which day the script runs. For example, with `skip_days: 5, 6` and `future_events_days: 5`: starting on a Monday the window is 5 calendar days (Mon→Fri), but starting on a Wednesday it spans 7 calendar days (Wed→next Tue, skipping Sat and Sun).
 - `source-calendar-N`: Duplicate this block per calendar and keep `N` in sync with the `.env` file.
   - `source`: Short name for the upstream calendar (e.g., `Google`, `Outlook`).
@@ -165,6 +168,32 @@ Two things worth knowing about Outlook feeds:
   and `RDATE` extras. This matters most for Outlook, which anchors a series at its original start
   date — before expansion, a long-running weekly meeting contributed nothing at all. Google feeds
   are unaffected either way, since Google pre-expands each occurrence server-side.
+
+## Choosing a backend
+
+The merge can reach iCloud two ways, selected by whether `ICLOUD_APP_PASSWORD` is set.
+
+| | pyicloud (default) | CalDAV |
+|---|---|---|
+| Selected by | no `ICLOUD_APP_PASSWORD` | `ICLOUD_APP_PASSWORD` set |
+| Credential | account password | app-specific password |
+| 2FA | required, handled over Telegram | none — the app-specific password *is* the second factor |
+
+**Use CalDAV if sign-in fails with the account password.** Apple restricts password
+sign-in on some accounts, and when it does, pyicloud cannot authenticate at all: its web
+API accepts nothing else, and no configuration works around it. An app-specific password
+does authenticate, which is what the CalDAV backend exists for.
+
+Both paths remain available, and switching back is removing one line from `.env`. The
+2FA machinery is untouched and still runs on the pyicloud path.
+
+Two behaviours differ under CalDAV and are worth knowing:
+
+- Collections are addressed by URL rather than Apple GUID. This is internal, but it is
+  what `destination_calendar` resolves to.
+- Apple serves reminder lists from the same endpoint as calendars, so collections that
+  cannot hold events are filtered out. Without that a reminders list sharing a
+  calendar's name could be selected as the destination.
 
 ## Usage
 

@@ -53,7 +53,7 @@ class TestLoadConfig:
         monkeypatch.setattr(merge, "FileSystem", lambda: FakeFileSystem(tmp_path))
         monkeypatch.setattr(merge, "YamlHelper", lambda path: FakeYamlHelper(config_values()))
 
-        yaml_helper, future_days, skip_days, fs = merge._load_config()
+        yaml_helper, future_days, skip_days, fs, _destination = merge._load_config()
 
         assert future_days == 5
         assert skip_days == ["5", "6"]
@@ -65,7 +65,7 @@ class TestLoadConfig:
         monkeypatch.setattr(merge, "FileSystem", lambda: FakeFileSystem(tmp_path))
         monkeypatch.setattr(merge, "YamlHelper", lambda path: FakeYamlHelper(config_values(future_days="7")))
 
-        _, future_days, _, _ = merge._load_config()
+        _, future_days, _, _, _ = merge._load_config()
 
         assert future_days == 7
 
@@ -310,6 +310,24 @@ class TestLoadIcloudEvents:
         _, _, events, _, _, _ = merge._load_icloud_events(icloud_service(service), 5, ["5"])
 
         assert len(events) == 1
+
+    def test_the_icloud_read_window_is_day_aligned(self, monkeypatch):
+        """Both bounds must cover whole days, whatever time the run starts.
+
+        pyicloud formats them with "%Y-%m-%d" and so discards the time of day; CalDAV
+        puts the exact instant into an RFC 4791 time-range filter. A window built from
+        `datetime.today()` therefore begins mid-afternoon on the CalDAV backend, which
+        hid the events the merge had written that same morning -- reconciliation found
+        no match and added a second copy on every run.
+        """
+        monkeypatch.setattr(merge, "datetime", _clock_pinned_to(datetime(2026, 8, 31, 16, 45, 30)))
+        service = FakeCalendarService()
+
+        merge._load_icloud_events(icloud_service(service), 5, ["5", "6"])
+
+        start, end = service.window
+        assert (start.hour, start.minute, start.second) == (0, 0, 0), f"window starts mid-day: {start}"
+        assert (end.hour, end.minute, end.second) == (23, 59, 59), f"window ends mid-day: {end}"
 
     def test_global_skip_days_still_shape_the_window(self, monkeypatch):
         """future_events_days is global and counts only non-skipped days.
@@ -810,13 +828,13 @@ class FlowSpy:
         monkeypatch.setattr(
             merge,
             "_load_config",
-            lambda: (FakeYamlHelper(config_values()), 5, ["5", "6"], FakeFileSystem(tmp_path)),
+            lambda: (FakeYamlHelper(config_values()), 5, ["5", "6"], FakeFileSystem(tmp_path), None),
         )
-        monkeypatch.setattr(merge, "_authenticate_icloud", lambda: fake_api())
+        monkeypatch.setattr(merge, "_authenticate_backend", lambda: fake_api())
         monkeypatch.setattr(
             merge,
             "_load_icloud_events",
-            lambda service, days, skip: (
+            lambda service, days, skip, destination=None: (
                 FakeCalendarService(),
                 "cal-guid",
                 [],
@@ -1112,12 +1130,12 @@ class TestMain:
         values[(SOURCE_1, merge.YAML_SETTING_SKIP_DAYS)] = "0"
 
         helper = FakeYamlHelper(values)
-        monkeypatch.setattr(merge, "_load_config", lambda: (helper, 5, ["5", "6"], FakeFileSystem(tmp_path)))
-        monkeypatch.setattr(merge, "_authenticate_icloud", lambda: fake_api())
+        monkeypatch.setattr(merge, "_load_config", lambda: (helper, 5, ["5", "6"], FakeFileSystem(tmp_path), None))
+        monkeypatch.setattr(merge, "_authenticate_backend", lambda: fake_api())
         monkeypatch.setattr(
             merge,
             "_load_icloud_events",
-            lambda service, days, skip: (
+            lambda service, days, skip, destination=None: (
                 FakeCalendarService(),
                 "cal-guid",
                 [],
@@ -1199,7 +1217,9 @@ class TestMain:
             order.append("auth")
             raise RuntimeError("2FA validation failed")
 
-        monkeypatch.setattr(merge, "_authenticate_icloud", failing_auth)
+        # The backend chooser, not _authenticate_icloud: main() enters through it, so
+        # patching the pyicloud path alone would leave FlowSpy's succeeding stub in place.
+        monkeypatch.setattr(merge, "_authenticate_backend", failing_auth)
         monkeypatch.setattr("sys.argv", ["calendar-merge", "--first"])
 
         with pytest.raises(RuntimeError):

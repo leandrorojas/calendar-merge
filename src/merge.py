@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import uuid
 
 # partial imports
 from collections.abc import Callable
@@ -14,15 +15,17 @@ from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from time import perf_counter
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import click
 import pyfangs.telegram as tg
 import pyfangs.terminal as term
+from caldav.davclient import DAVClient
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
-from icalendar import Calendar
+from icalendar import Calendar, Event
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 
@@ -49,6 +52,19 @@ ICLOUD_FIELD_END_DATE = "endDate"
 ICLOUD_FIELD_TITLE = "title"
 ICLOUD_FIELD_TZ = "tz"
 ICLOUD_FIELD_ALL_DAY_EVENT = "allDay"
+ICLOUD_FIELD_GUID = "guid"
+ICLOUD_FIELD_PARENT_GUID = "pGuid"
+
+# Apple's web API only accepts a real account password, which this Apple Account no
+# longer permits for service sign-in. CalDAV accepts an app-specific password, so the
+# presence of one selects that backend. Both paths stay available: pyicloud remains the
+# default so nothing changes for an account where password sign-in still works.
+ENV_ICLOUD_APP_PASSWORD = "ICLOUD_APP_PASSWORD"
+CALDAV_URL = "https://caldav.icloud.com/"
+ICS_PRODID = "-//calendar-merge//EN"
+# 200 and 204 both mean deleted; caldav itself also accepts 404, which we do not.
+CALDAV_DELETE_OK_STATUSES = frozenset({200, 204})
+YAML_SETTING_DESTINATION_CALENDAR = "destination_calendar"
 
 ICS_TAG_VEVENT = "VEVENT"
 ICS_FIELD_DATE_START = "dtstart"
@@ -961,6 +977,10 @@ def _calculate_future_date(start_date: datetime, future_days: int, skip_days: li
     return current_date
 
 
+def _start_of_day(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, dt.day, 0, 0, 0, tzinfo=dt.tzinfo)
+
+
 def _end_of_day(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=dt.tzinfo)
 
@@ -1505,7 +1525,7 @@ def _apply_event_actions(
 # region main flow helpers
 
 
-def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem]:
+def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem, str | None]:
     """Load .env, parse config.yaml, return (yaml_helper, future_event_days, skip_days, fs)."""
     print_step(TAG_CALENDAR_MERGE, "reading config...", one_liner=False)
     load_dotenv()
@@ -1529,8 +1549,19 @@ def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem]:
         term.print_failed()
         raise RuntimeError("Unable to load skip days configuration") from err
     skip_days = _normalize_skip_days(skip_days)
+    # Optional, and read through a local catch for the reason documented on
+    # _resolve_source_skip_days: YamlHelper raises for an absent setting.
+    try:
+        # YamlHelper.get raises only for a *missing* key, so `destination_calendar:`
+        # left blank returns None -- and str(None) is "None", which is truthy and would
+        # fail the run looking for a calendar by that name. Omitting the key and
+        # leaving it empty must mean the same thing.
+        configured = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_DESTINATION_CALENDAR)
+    except YamlError:
+        configured = None
+    destination = str(configured).strip() if configured is not None else ""
     term.print_done()
-    return yaml_helper, future_event_days, skip_days, fs
+    return yaml_helper, future_event_days, skip_days, fs, destination or None
 
 
 def _disable_automatic_2fa_requests() -> None:
@@ -1560,6 +1591,224 @@ def _disable_automatic_2fa_requests() -> None:
         setattr(PyiCloudService, PYICLOUD_AUTO_2FA_METHOD, lambda self: None)
 
 
+class CalDavEventMissing(Exception):
+    """A DELETE that reported the event was already gone.
+
+    Carries `code` so `_is_missing_event_error` reads it the same way it reads
+    pyicloud's own exception, keeping one classification for both backends.
+    """
+
+    code = HTTP_NOT_FOUND
+
+
+class DavClientLike(Protocol):
+    """The part of `caldav.DAVClient` this adapter actually uses.
+
+    Named as a protocol rather than annotating the concrete class so the tests can pass
+    a fake without either loosening the annotation to `Any` or standing up a real HTTP
+    client. It doubles as the contract: two methods, and anything else caldav offers is
+    deliberately out of scope.
+    """
+
+    def principal(self) -> Any: ...
+
+    def calendar(self, **kwargs: Any) -> Any: ...
+
+    def delete(self, url: str) -> Any: ...
+
+
+class CalDavCalendarService:
+    """iCloud CalDAV presented through the same surface pyicloud's calendar exposes.
+
+    Written as an adapter rather than a rewrite because the rest of the module -- and
+    `FakeCalendarService` in the tests -- already speaks exactly five operations:
+    `get_calendars`, `get_events`, `add_event` and `remove_event`. Matching that shape
+    keeps the merge, reconciliation and sync logic untouched.
+
+    It exists because Apple restricted password sign-in on this account. pyicloud speaks
+    only the web API, which accepts nothing but a real account password; CalDAV accepts
+    an app-specific password. The pyicloud path is deliberately left in place -- this is
+    a second backend, not a replacement.
+    """
+
+    def __init__(self, client: DavClientLike) -> None:
+        self._client = client
+        self._principal = client.principal()
+        self._calendars: list | None = None
+
+    def get_calendars(self) -> list[dict]:
+        """Every event-capable collection, in pyicloud's dict shape.
+
+        `guid` carries the collection URL rather than an Apple GUID: it is what CalDAV
+        addresses a calendar by, and the only identifier the caller ever passes back.
+        """
+        return [
+            {ICLOUD_FIELD_GUID: str(calendar.url), ICLOUD_FIELD_TITLE: _caldav_calendar_name(calendar)}
+            for calendar in self._event_calendars()
+        ]
+
+    def _event_calendars(self) -> list:
+        """Collections that hold events, not reminders.
+
+        Apple returns task lists from the same endpoint: this account has a `Reminders`
+        and a `Familia` list alongside its six calendars, both advertising `VTODO` and
+        neither able to hold an event. Searching them costs a round trip each and
+        returns nothing, and offering them as destinations means a reminders list can be
+        selected to receive the merge -- here only the trailing warning sign in
+        `Familia ⚠️` keeps it from colliding with the real `Familia`.
+
+        A collection that does not say what it supports is kept. Apple publishes the
+        property, so this is for a server that does not: dropping such a collection
+        would hide every calendar it has, which is worse than searching one too many.
+        """
+        # Cached for the life of the service, which is one run. `get_calendars` and
+        # `get_events` both call this, so without it a run lists the collections twice
+        # and probes each one's components twice.
+        if self._calendars is not None:
+            return self._calendars
+        keep = []
+        for calendar in self._principal.calendars():
+            try:
+                components = calendar.get_supported_components()
+            except Exception:
+                components = None
+            if components is None or ICS_TAG_VEVENT in components:
+                keep.append(calendar)
+        self._calendars = keep
+        return keep
+
+    def get_events(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
+        """Timed events in the window, across every collection.
+
+        Datetimes are normalised to UTC and reported with `tz` set to UTC, so the
+        caller's `build_datetime` + `convert_to_utc` round-trip is exact. Preserving each
+        event's original zone would mean re-deriving it from VTIMEZONE for no gain.
+        """
+        events: list[dict] = []
+        for calendar in self._event_calendars():
+            for found in calendar.search(start=from_dt, end=to_dt, event=True, expand=True):
+                parsed = _caldav_event_fields(found, calendar)
+                if parsed is not None:
+                    events.append(parsed)
+        return events
+
+    def add_event(self, event) -> None:
+        """Create one timed event on the collection named by its `pguid`."""
+        calendar = self._client.calendar(url=event.pguid)
+        calendar.save_event(_build_ics_event(event))
+
+    def remove_event(self, event) -> None:
+        """Delete by URL, which is what `get_events` handed out as the guid.
+
+        The DELETE is issued directly rather than through `caldav.Event.delete()`,
+        which treats 404 as success and returns nothing -- so an event already removed
+        from another device would be tallied as a deletion this run performed.
+        CLAUDE.md keeps those apart deliberately: a systemic fault 404-ing every delete
+        must not look like a run that genuinely removed events. Raising here with a
+        `code` lets `_is_missing_event_error` classify it exactly as it does on the
+        pyicloud path.
+        """
+        response = self._client.delete(event.guid)
+        status = getattr(response, "status", None)
+        if status == HTTP_NOT_FOUND:
+            raise CalDavEventMissing(f"Event already gone: {event.guid}")
+        if status not in CALDAV_DELETE_OK_STATUSES:
+            raise RuntimeError(f"Unable to delete event, server returned {status}")
+
+
+class CalDavService:
+    """Stands in for `PyiCloudService`, exposing the one attribute the flow uses."""
+
+    def __init__(self, calendar_service: CalDavCalendarService) -> None:
+        self.calendar = calendar_service
+
+
+def _caldav_calendar_name(calendar) -> str:
+    """A collection's display name, falling back to whatever it can be called."""
+    try:
+        name = calendar.get_display_name()
+    except Exception:
+        name = None
+    return str(name or getattr(calendar, "name", "") or calendar.url)
+
+
+def _caldav_event_fields(found, calendar) -> dict | None:
+    """One CalDAV event in pyicloud's dict shape, or None when it is not syncable.
+
+    All-day events carry a `date`; the merge only handles timed events, and the caller
+    filters them out anyway -- returning them with `allDay` set keeps that decision in
+    one place.
+    """
+    try:
+        component = found.icalendar_instance.walk(ICS_TAG_VEVENT)[0]
+    except Exception:
+        return None
+    start = component.get(ICS_FIELD_DATE_START)
+    end = component.get(ICS_FIELD_DATE_END)
+    if start is None or end is None:
+        return None
+    start_value, end_value = start.dt, end.dt
+    if not isinstance(start_value, datetime) or not isinstance(end_value, datetime):
+        return {ICLOUD_FIELD_ALL_DAY_EVENT: True}
+    return {
+        ICLOUD_FIELD_START_DATE: _apple_datetime_parts(start_value),
+        ICLOUD_FIELD_END_DATE: _apple_datetime_parts(end_value),
+        ICLOUD_FIELD_TITLE: str(component.get("SUMMARY", "")),
+        ICLOUD_FIELD_TZ: "UTC",
+        ICLOUD_FIELD_ALL_DAY_EVENT: False,
+        ICLOUD_FIELD_GUID: str(found.url),
+        ICLOUD_FIELD_PARENT_GUID: str(calendar.url),
+    }
+
+
+def _apple_datetime_parts(value: datetime) -> list[int]:
+    """A datetime in the `[0, year, month, day, hour, minute]` shape `build_datetime` reads."""
+    moment = convert_to_utc(value) if value.tzinfo else value
+    return [0, moment.year, moment.month, moment.day, moment.hour, moment.minute]
+
+
+def _build_ics_event(event) -> str:
+    """A minimal VEVENT for one timed event.
+
+    Built through `icalendar` rather than string formatting so RFC 5545 TEXT escaping
+    and 75-octet line folding are handled for us. Apple accepts the unescaped form --
+    a comma, semicolon, backslash and a 90-octet title all round-tripped intact
+    through iCloud -- but that is the server being lenient, not the document being
+    right, and the title is built from configuration. A SUMMARY that came back altered
+    would fail the `event.title == source_tag` match in `_select_source_icloud_events`
+    and add a duplicate block on every run, which is the failure this PR exists to
+    remove.
+    """
+    calendar = Calendar()
+    calendar.add("PRODID", ICS_PRODID)
+    calendar.add("VERSION", "2.0")
+    vevent = Event()
+    vevent.add("UID", f"{uuid.uuid4()}@calendar-merge")
+    vevent.add("DTSTAMP", datetime.now(UTC))
+    vevent.add("DTSTART", convert_to_utc(event.start_date))
+    vevent.add("DTEND", convert_to_utc(event.end_date))
+    vevent.add("SUMMARY", event.title)
+    calendar.add_component(vevent)
+    return calendar.to_ical().decode("utf-8")
+
+
+def _authenticate_caldav(username: str, app_password: str) -> CalDavService:
+    """Connect over CalDAV with an app-specific password.
+
+    No 2FA machinery is involved: an app-specific password is already the second
+    factor, which is precisely why it works where the account password does not.
+    """
+    print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud over CalDAV...", one_liner=False)
+    try:
+        client = DAVClient(url=CALDAV_URL, username=username, password=app_password)
+        service = CalDavService(CalDavCalendarService(client))
+    except Exception as err:
+        term.print_failed()
+        raise RuntimeError("Unable to start iCloud CalDAV service") from err
+    term.print_done()
+    return service
+
+
 def _authenticate_icloud() -> PyiCloudService:
     """Connect to iCloud and handle 2FA. Returns the authenticated service."""
     print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud...", one_liner=False)
@@ -1584,7 +1833,59 @@ def _authenticate_icloud() -> PyiCloudService:
     return icloud_service
 
 
-def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int, skip_days: list[str]) -> tuple:
+def _select_destination_calendar(calendars: list[dict], destination: str | None) -> str:
+    """The GUID of the calendar the merge writes to.
+
+    Named in `config.yaml` as `destination_calendar`. Without it the destination is
+    whichever collection the provider happens to return first, which is not a decision
+    anyone made: this account has ten, and CalDAV and the web API do not agree on their
+    order, so the same config could write to a different calendar depending on the
+    backend. Selecting by title is also what makes the two backends interchangeable.
+
+    Left unset it keeps the previous behaviour rather than failing, so an existing
+    deployment is not broken by upgrading.
+    """
+    if destination:
+        for calendar in calendars:
+            if calendar.get(ICLOUD_FIELD_TITLE) == destination:
+                guid = calendar.get(ICLOUD_FIELD_GUID)
+                if guid:
+                    return str(guid)
+        available = ", ".join(sorted(str(c.get(ICLOUD_FIELD_TITLE)) for c in calendars)) or "none"
+        raise RuntimeError(f"Destination calendar {destination!r} not found. Available: {available}")
+
+    guid = next((c.get(ICLOUD_FIELD_GUID) for c in calendars if c.get(ICLOUD_FIELD_GUID)), None)
+    if not guid:
+        raise RuntimeError("No calendar GUID available")
+    return str(guid)
+
+
+def _authenticate_backend() -> "PyiCloudService | CalDavService":
+    """Whichever iCloud backend the credentials in `.env` select.
+
+    An `ICLOUD_APP_PASSWORD` chooses CalDAV, because Apple restricted password sign-in
+    on this account and the web API pyicloud speaks accepts nothing but a real account
+    password. The pyicloud path stays reachable by leaving that variable unset -- this
+    is a second backend, not a replacement, and falling back is one line in `.env`.
+    """
+    app_password = os.getenv(ENV_ICLOUD_APP_PASSWORD)
+    if not app_password:
+        return _authenticate_icloud()
+    username = os.getenv(ENV_ICLOUD_USER)
+    if not username:
+        # str(None) is "None", a perfectly valid-looking username, so without this the
+        # run fails as a 401 from Apple instead of naming the variable that is missing.
+        # Setting only the app password is a plausible reading of the README.
+        raise RuntimeError(f"{ENV_ICLOUD_USER} is required to authenticate over CalDAV")
+    return _authenticate_caldav(username, app_password)
+
+
+def _load_icloud_events(
+    icloud_service: "PyiCloudService | CalDavService",
+    future_event_days: int,
+    skip_days: list[str],
+    destination: str | None = None,
+) -> tuple:
     """Fetch calendar GUID, load iCloud events, compute date range.
 
     Returns (calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date).
@@ -1593,17 +1894,33 @@ def _load_icloud_events(icloud_service: PyiCloudService, future_event_days: int,
     calendar_service = icloud_service.calendar
     try:
         calendars = calendar_service.get_calendars()
-        calendar_guid = next((c.get("guid") for c in calendars if c.get("guid")), None)
     except Exception as err:
         term.print_failed()
         raise RuntimeError("Unable to fetch calendars") from err
 
-    if not calendar_guid:
+    # _select_destination_calendar raises rather than returning an empty guid, so there
+    # is no second check here: one that could never fire would be a branch nothing
+    # proves right.
+    try:
+        calendar_guid = _select_destination_calendar(calendars, destination)
+    except RuntimeError:
         term.print_failed()
-        raise RuntimeError("No calendar GUID available")
+        raise
 
-    filter_start = datetime.today()
-    filter_end = _calculate_future_date(filter_start, future_event_days, skip_days)
+    # Both bounds are day-aligned, and that is a correctness requirement rather than
+    # tidiness. `datetime.today()` carries the run's time of day, which pyicloud discards
+    # -- it formats both bounds with "%Y-%m-%d", so Apple returns the whole first and
+    # last day whatever time is passed. CalDAV does not: `search()` puts the exact
+    # instant into an RFC 4791 time-range filter.
+    #
+    # So under CalDAV a 13:00 run could not see the events it had itself written that
+    # morning, while the source side still offered them -- `_parse_source_events` is
+    # handed midnight through end-of-day. Reconciliation found no match and added a
+    # second copy, every run, all day. Measured against the live calendar: three
+    # `[MCP] meet/parat` blocks on a Tuesday were visible from 00:00 and invisible from
+    # 13:00.
+    filter_start = _start_of_day(datetime.today())
+    filter_end = _end_of_day(_calculate_future_date(filter_start, future_event_days, skip_days))
 
     try:
         all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
@@ -1905,14 +2222,14 @@ def main():
     parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
     args = parser.parse_args()
 
-    yaml_helper, future_event_days, skip_days, fs = _load_config()
+    yaml_helper, future_event_days, skip_days, fs, destination = _load_config()
 
     if args.first:
         send_telegram_message("☀️ calendar-merge started for today.")
 
-    icloud_service = _authenticate_icloud()
+    icloud_service = _authenticate_backend()
     calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now = _load_icloud_events(
-        icloud_service, future_event_days, skip_days
+        icloud_service, future_event_days, skip_days, destination
     )
 
     utc_today_bod = convert_to_utc(today_bod)

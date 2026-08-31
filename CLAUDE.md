@@ -348,6 +348,47 @@ the attached response's `status_code`: a 404 only becomes `PyiCloudAPIResponseEx
 Apple answers with JSON, and arrives as `requests.HTTPError` when it does not. Only 404 is
 benign; every other status still stops the run.
 
+**Two iCloud backends, selected by credential.** Apple restricted password sign-in on
+this account, which stops pyicloud dead: its web API accepts nothing but the account
+password, and pyicloud 2.6.5 has no app-specific-password support at all, so no
+configuration restores service. CalDAV accepts one, so `_authenticate_backend` picks it
+whenever `ICLOUD_APP_PASSWORD` is set and pyicloud otherwise.
+
+`CalDavCalendarService` is an adapter, not a rewrite. The rest of the module speaks
+exactly five operations -- `get_calendars`, `get_events`, `add_event`, `remove_event`,
+plus the `calendar` attribute -- and `FakeCalendarService` already had that shape, so
+merge, reconciliation and sync logic are untouched. `guid` carries the collection URL,
+which is the identifier CalDAV uses to address a calendar.
+
+The pyicloud path stays reachable deliberately, and the 222-line 2FA subsystem with it:
+falling back is removing one line from `.env`.
+
+`DavClientLike` is a Protocol rather than the concrete `DAVClient` so tests can pass a
+fake without loosening the annotation to `Any`. The concrete import must come from
+`caldav.davclient`, not `caldav`: the package resolves public names through a PEP 562
+lazy-import map, which mypy reads as a variable rather than a type, so `caldav.DAVClient`
+as an annotation fails with "not valid as a type".
+
+**Reminder lists arrive from the same endpoint as calendars.** Six collections come back
+on this account and two advertise `VTODO` -- a `Reminders` list and a `Familia` list
+beside the real `Familia` calendar. `_event_calendars()` keeps only those supporting
+`VEVENT`. That is not merely an optimisation: `destination_calendar` matches on title, so
+a reminders list is otherwise offered as a destination, and here only a trailing warning
+sign in its display name kept it from colliding. A collection that cannot report its
+components is kept -- dropping it would hide every calendar on a server that does not
+publish the property, and searching one too many is the cheaper mistake.
+
+**`destination_calendar` names where the merge writes.** Without it the destination is
+whichever collection the provider returns first, which is nobody's decision: this account
+has several, and CalDAV and the web API need not agree on their order, so the same config
+could write to different calendars under each backend. Selecting by title is also what
+makes the two backends interchangeable. Left unset the old behaviour is kept, so
+upgrading breaks nothing.
+
+Verified against live iCloud on 2026-08-30: authentication, calendar listing, destination
+resolution, reading 56 events, and a probe event round-tripping through `add_event`,
+`get_events` and `remove_event` with exact start and end times.
+
 **Source feed quirks:** Outlook/Microsoft 365 feeds are plain ICS and need no dedicated code
 path. They use Windows timezone identifiers (`Argentina Standard Time`), which `icalendar` maps
 to IANA zones, so the parsed datetimes arrive timezone-aware.

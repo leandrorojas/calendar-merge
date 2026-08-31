@@ -206,11 +206,16 @@ class FakeCalendarService:
         self.removed: list = []
         self._add_error = add_error
         self._remove_error = remove_error
+        self.window: tuple = (None, None)
 
     def get_calendars(self):
         return self._calendars
 
     def get_events(self, from_dt=None, to_dt=None):
+        # Recorded because the bounds are load-bearing: pyicloud discards the time of
+        # day, CalDAV does not, so a window carrying the run's clock time is invisibly
+        # wrong on one backend and correct on the other.
+        self.window = (from_dt, to_dt)
         return self._events
 
     def add_event(self, event):
