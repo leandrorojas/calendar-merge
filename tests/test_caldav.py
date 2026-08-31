@@ -91,6 +91,7 @@ class FakeDavClient:
         self._delete_status = delete_status
         self.requested_urls: list[str] = []
         self.deleted: list[str] = []
+        self.calendars_calls = 0
 
     def delete(self, url):
         self.deleted.append(url)
@@ -102,6 +103,7 @@ class FakeDavClient:
         return self
 
     def calendars(self):
+        self.calendars_calls += 1
         return self._calendars
 
     def calendar(self, **kwargs):
@@ -337,6 +339,66 @@ class TestBuildIcsEvent:
 
         uid = lambda ics: str(ICalendar.from_ical(ics).walk("VEVENT")[0]["UID"])  # noqa: E731
         assert uid(first) != uid(second), "a shared UID would make the second event replace the first"
+
+
+class TestBuildIcsEscaping:
+    """The document must be right independently of how forgiving the server is.
+
+    Apple accepts unescaped commas, semicolons, backslashes and unfolded 90-octet
+    titles -- all four round-tripped intact through iCloud. That is leniency, not
+    correctness: a SUMMARY that came back altered would fail the
+    `event.title == source_tag` match in `_select_source_icloud_events` and add a
+    duplicate block on every run.
+    """
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "[ACME, Inc] meet/parat",
+            "[MCP] plan; review/parat",
+            "[MCP] back\\slash/parat",
+            "[MCP] " + "x" * 90 + "/parat",
+        ],
+    )
+    def test_special_characters_survive_a_round_trip(self, title):
+        ics = merge._build_ics_event(
+            EventObject(
+                pguid="https://x/fam/",
+                title=title,
+                start_date=datetime(2026, 9, 1, 13, 0, tzinfo=UTC),
+                end_date=datetime(2026, 9, 1, 13, 30, tzinfo=UTC),
+            )
+        )
+
+        (event,) = ICalendar.from_ical(ics).walk("VEVENT")
+        assert str(event["SUMMARY"]) == title
+
+    def test_long_lines_are_folded_to_the_rfc_limit(self):
+        """RFC 5545 caps a content line at 75 octets; longer ones must be folded."""
+        ics = merge._build_ics_event(
+            EventObject(
+                pguid="https://x/fam/",
+                title="[MCP] " + "y" * 200,
+                start_date=datetime(2026, 9, 1, 13, 0, tzinfo=UTC),
+                end_date=datetime(2026, 9, 1, 13, 30, tzinfo=UTC),
+            )
+        )
+
+        too_long = [line for line in ics.split("\r\n") if len(line.encode("utf-8")) > 75]
+        assert not too_long, f"unfolded lines: {too_long}"
+
+
+class TestCalendarListCaching:
+    def test_the_collection_list_is_fetched_once_per_run(self):
+        """get_calendars and get_events both need it; the set cannot change mid-run."""
+        client = FakeDavClient([FakeDavCalendar("https://x/fam/")])
+        service = merge.CalDavCalendarService(client)
+
+        service.get_calendars()
+        service.get_events(*WINDOW)
+        service.get_calendars()
+
+        assert client.calendars_calls == 1
 
 
 class TestSelectDestinationCalendar:

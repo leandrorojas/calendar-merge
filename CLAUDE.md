@@ -358,7 +358,7 @@ whenever `ICLOUD_APP_PASSWORD` is set and pyicloud otherwise.
 exactly five operations -- `get_calendars`, `get_events`, `add_event`, `remove_event`,
 plus the `calendar` attribute -- and `FakeCalendarService` already had that shape, so
 merge, reconciliation and sync logic are untouched. `guid` carries the collection URL,
-which is what CalDAV addresses a calendar by.
+which is the identifier CalDAV uses to address a calendar.
 
 The pyicloud path stays reachable deliberately, and the 222-line 2FA subsystem with it:
 falling back is removing one line from `.env`.

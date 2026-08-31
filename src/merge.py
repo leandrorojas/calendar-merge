@@ -25,7 +25,7 @@ from caldav.davclient import DAVClient
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
-from icalendar import Calendar
+from icalendar import Calendar, Event
 from pyfangs.filesystem import FileSystem
 from pyfangs.time import convert_to_utc
 
@@ -61,10 +61,9 @@ ICLOUD_FIELD_PARENT_GUID = "pGuid"
 # default so nothing changes for an account where password sign-in still works.
 ENV_ICLOUD_APP_PASSWORD = "ICLOUD_APP_PASSWORD"
 CALDAV_URL = "https://caldav.icloud.com/"
+ICS_PRODID = "-//calendar-merge//EN"
 # 200 and 204 both mean deleted; caldav itself also accepts 404, which we do not.
 CALDAV_DELETE_OK_STATUSES = frozenset({200, 204})
-# RFC 5545 UTC form: the trailing Z is the marker, so the value must already be UTC.
-ICS_UTC_DATETIME_FORMAT = "%Y%m%dT%H%M%SZ"
 YAML_SETTING_DESTINATION_CALENDAR = "destination_calendar"
 
 ICS_TAG_VEVENT = "VEVENT"
@@ -1635,6 +1634,7 @@ class CalDavCalendarService:
     def __init__(self, client: DavClientLike) -> None:
         self._client = client
         self._principal = client.principal()
+        self._calendars: list | None = None
 
     def get_calendars(self) -> list[dict]:
         """Every event-capable collection, in pyicloud's dict shape.
@@ -1661,6 +1661,11 @@ class CalDavCalendarService:
         property, so this is for a server that does not: dropping such a collection
         would hide every calendar it has, which is worse than searching one too many.
         """
+        # Cached for the life of the service, which is one run. `get_calendars` and
+        # `get_events` both call this, so without it a run lists the collections twice
+        # and probes each one's components twice.
+        if self._calendars is not None:
+            return self._calendars
         keep = []
         for calendar in self._principal.calendars():
             try:
@@ -1669,6 +1674,7 @@ class CalDavCalendarService:
                 components = None
             if components is None or ICS_TAG_VEVENT in components:
                 keep.append(calendar)
+        self._calendars = keep
         return keep
 
     def get_events(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
@@ -1764,26 +1770,26 @@ def _apple_datetime_parts(value: datetime) -> list[int]:
 def _build_ics_event(event) -> str:
     """A minimal VEVENT for one timed event.
 
-    Written directly rather than through a builder: the merge only ever creates a title
-    and a UTC start and end, and an ICS document that small is easier to verify by
-    reading than a library call chain.
+    Built through `icalendar` rather than string formatting so RFC 5545 TEXT escaping
+    and 75-octet line folding are handled for us. Apple accepts the unescaped form --
+    a comma, semicolon, backslash and a 90-octet title all round-tripped intact
+    through iCloud -- but that is the server being lenient, not the document being
+    right, and the title is built from configuration. A SUMMARY that came back altered
+    would fail the `event.title == source_tag` match in `_select_source_icloud_events`
+    and add a duplicate block on every run, which is the failure this PR exists to
+    remove.
     """
-    stamp = datetime.now(UTC).strftime(ICS_UTC_DATETIME_FORMAT)
-    start = convert_to_utc(event.start_date).strftime(ICS_UTC_DATETIME_FORMAT)
-    end = convert_to_utc(event.end_date).strftime(ICS_UTC_DATETIME_FORMAT)
-    return (
-        "BEGIN:VCALENDAR\r\n"
-        "VERSION:2.0\r\n"
-        "PRODID:-//calendar-merge//EN\r\n"
-        "BEGIN:VEVENT\r\n"
-        f"UID:{uuid.uuid4()}@calendar-merge\r\n"
-        f"DTSTAMP:{stamp}\r\n"
-        f"DTSTART:{start}\r\n"
-        f"DTEND:{end}\r\n"
-        f"SUMMARY:{event.title}\r\n"
-        "END:VEVENT\r\n"
-        "END:VCALENDAR\r\n"
-    )
+    calendar = Calendar()
+    calendar.add("PRODID", ICS_PRODID)
+    calendar.add("VERSION", "2.0")
+    vevent = Event()
+    vevent.add("UID", f"{uuid.uuid4()}@calendar-merge")
+    vevent.add("DTSTAMP", datetime.now(UTC))
+    vevent.add("DTSTART", convert_to_utc(event.start_date))
+    vevent.add("DTEND", convert_to_utc(event.end_date))
+    vevent.add("SUMMARY", event.title)
+    calendar.add_component(vevent)
+    return calendar.to_ical().decode("utf-8")
 
 
 def _authenticate_caldav(username: str, app_password: str) -> CalDavService:

@@ -44,7 +44,8 @@ Merge multiple ICS calendars (Google, Outlook, iCloud, etc.) into a single, unif
 
 Add one entry per calendar feed.
 
-- `ICLOUD_USERNAME` and `ICLOUD_PASSWORD`: iCloud credentials the script will use to connect.
+- `ICLOUD_USERNAME`: your Apple ID. Required by **both** backends.
+- `ICLOUD_PASSWORD`: the account password. Used **only** by the pyicloud backend, and ignored when `ICLOUD_APP_PASSWORD` is set.
 - `ICLOUD_APP_PASSWORD`: optional, and setting it **changes which backend is used**. With it the merge talks to iCloud over CalDAV; without it it uses pyicloud's web API and its 2FA flow. Generate one at [appleid.apple.com](https://appleid.apple.com) under Sign-In and Security. See [Choosing a backend](#choosing-a-backend).
 - `CALENDAR_URL_N`: ICS feed URLs where `N` starts at `0` and increments (`CALENDAR_URL_0`, `CALENDAR_URL_1`, ...). Each URL must have a matching `source-calendar-N` section in `config.yaml`.
 - `TELEGRAM_BOT_API_TOKEN`: Bot token used for notifications and 2FA code entry (optional, required if you want Telegram alerts or 2FA handling).
