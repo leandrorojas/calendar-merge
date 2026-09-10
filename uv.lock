@@ -144,7 +144,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.6.2" },
     { name = "pyfangs", git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.7.3" },
-    { name = "pyicloud", specifier = "==2.7.0" },
+    { name = "pyicloud", specifier = "==2.6.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "python-dateutil", specifier = ">=2.9" },
@@ -1313,7 +1313,7 @@ wheels = [
 
 [[package]]
 name = "pyicloud"
-version = "2.7.0"
+version = "2.6.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -1326,12 +1326,11 @@ dependencies = [
     { name = "requests" },
     { name = "srp" },
     { name = "tinyhtml" },
-    { name = "typing-extensions" },
     { name = "tzlocal" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/80/fb/0c287b8771cf69fa04b857bcc164811fffb4bf0627630a679791ce451ef2/pyicloud-2.7.0.tar.gz", hash = "sha256:05718bdb698f4b68e52b1c6cd464f46bbab9a5c2786c003ee1e01ad81baded0d", size = 612083, upload-time = "2026-09-04T10:22:46.197Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/27/1128c1eb0b2ce4f596bb8233481b7dfe04086fe7fe3cf729ab89d189f9f0/pyicloud-2.6.5.tar.gz", hash = "sha256:21830e16520d8891892bc8b00065bdabf92fe7dfc0c68c1f5040b9c9c9a3a8c5", size = 523539, upload-time = "2026-06-09T18:46:57.674Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/7f/7e748f3c8bfffc7bdd4fd92d8750f252477b55daec8dc0f30d615c7ab31d/pyicloud-2.7.0-py3-none-any.whl", hash = "sha256:f22e0659cacff0897dea2926db3811cf60eb5170cb5e52efce0e807748352eac", size = 324511, upload-time = "2026-09-04T10:22:44.545Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/08/582dc596def5279ebb95b8474df056e2bf123e8eaa51bc2d601c8706c403/pyicloud-2.6.5-py3-none-any.whl", hash = "sha256:8823391c320a262621a0c0e36d4009465764c4828ee5ff6d4aac590e0fdf123f", size = 295288, upload-time = "2026-06-09T18:46:56.015Z" },
 ]
 
 [[package]]
