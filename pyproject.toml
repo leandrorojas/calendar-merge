@@ -14,8 +14,14 @@ dependencies = [
     "python-dateutil>=2.9",
     "icalendar>=7.2.2",
     "pyfangs",
+    # Held at 2.6.5: 2.7.0 imports `rich` on the core path, via
+    # services/__init__ -> notes -> notes/service.py -> rendering/exporter.py,
+    # while declaring rich only under its `cli` and `dev` extras. merge.py
+    # imports pyicloud.services.calendar at module level, so the ModuleNotFoundError
+    # takes down the CalDAV path too, not just the pyicloud fallback it affects in
+    # name. Reported upstream; lift the pin once a release carries the fix.
     "pyicloud==2.6.5",
-    "caldav>=3.2.1",
+    "caldav>=3.3.0",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +30,7 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
-    "ruff>=0.16.5",
+    "ruff>=0.16.6",
 ]
 
 [build-system]
