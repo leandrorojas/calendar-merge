@@ -20,7 +20,7 @@ dependencies = [
     # imports pyicloud.services.calendar at module level, so the ModuleNotFoundError
     # takes down the CalDAV path too, not just the pyicloud fallback it affects in
     # name. Reported upstream; lift the pin once a release carries the fix.
-    "pyicloud==2.6.5",
+    "pyicloud==2.7.0",
     "caldav>=3.3.0",
 ]
 
@@ -30,7 +30,7 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
 ]
 
 [build-system]
