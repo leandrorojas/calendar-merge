@@ -618,8 +618,9 @@ SMS, the class patch in `_disable_automatic_2fa_requests` is not holding.
 
 ## Dependencies
 
-- `python-telegram-bot` (22.8) — behind `TelegramNotifier`. A `Bot` is released with `shutdown()`, never `close()`: `Bot.close` is the Bot API method that closes the bot on the server, and Telegram answers it with 429 for the first ten minutes after launch, which replaces the real error. Not confirmed against a live failure.
+- `python-telegram-bot` (22.8) — behind `TelegramNotifier`. A `Bot` is released with `shutdown()`, never `close()`: `Bot.close` is the Bot API method that closes the bot on the server, and Telegram answers it with 429 for the first ten minutes after launch, which replaces the real error. Not confirmed against a live failure. `Bot.initialize()` calls getMe, and a rejected token raises `InvalidToken` with the token in its message, so `TelegramNotifier._open_bot` replaces it; anything that logs a Telegram error must not print that original.
 - `pyyaml` — behind `YamlHelper`.
+- `uv.lock`: a newer local uv rewrites its `revision` line with no dependency change, and a host running an older uv may not read it. Check `git diff uv.lock` before committing and restore the line.
 - `pyicloud` (2.6.5) — iCloud API (calendar service, HSA2 2FA via trusted-device bridge)
 - `icalendar` — ICS file parsing
 - `click` — used for interactive 2FA prompts. Declared directly in `pyproject.toml`: it used to arrive transitively via pyicloud, which dropped it in 2.6.5, so `import click` broke the moment that bump was attempted.
