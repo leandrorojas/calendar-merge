@@ -31,6 +31,7 @@ from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
 from telegram import Bot, Update
 from telegram.constants import ParseMode
+from telegram.error import InvalidToken
 
 # region Terminal, YAML and filesystem helpers
 
@@ -874,9 +875,26 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.bot: Bot | None = None
 
+    async def _open_bot(self) -> Bot:
+        """Return an initialised Bot, shutting it down again if initialisation fails.
+
+        `Bot.initialize` calls getMe, and a rejected token comes back as an `InvalidToken`
+        whose message contains the token itself. That message reaches the terminal, the
+        log and the failure alert, so it is replaced with one that does not.
+        """
+        bot = Bot(token=self.token)
+        try:
+            await bot.initialize()
+        except InvalidToken as err:
+            await bot.shutdown()
+            raise InvalidToken("The bot token was rejected by the server.") from err.__cause__
+        except BaseException:
+            await bot.shutdown()
+            raise
+        return bot
+
     async def __aenter__(self):
-        self.bot = Bot(token=self.token)
-        await self.bot.initialize()
+        self.bot = await self._open_bot()
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -891,8 +909,11 @@ class TelegramNotifier:
         """Run *func* on the shared Bot when inside `async with`, else on a short-lived one."""
         if self.bot:
             return await func(self.bot)
-        async with Bot(token=self.token) as bot:
+        bot = await self._open_bot()
+        try:
             return await func(bot)
+        finally:
+            await bot.shutdown()
 
     async def send(self, message: str, parse_mode: str = ParseMode.MARKDOWN):
         async def _send(bot: Bot):

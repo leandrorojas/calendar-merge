@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from telegram.error import InvalidToken
 
 import merge
 
@@ -140,6 +141,7 @@ class FakeBot:
     """Records the lifecycle calls. `close` is the Bot API method and must never be reached."""
 
     instances: ClassVar[list["FakeBot"]] = []
+    initialize_error: ClassVar[BaseException | None] = None
 
     def __init__(self, token):
         self.token = token
@@ -149,6 +151,8 @@ class FakeBot:
 
     async def initialize(self):
         self.events.append("initialize")
+        if self.initialize_error:
+            raise self.initialize_error
 
     async def shutdown(self):
         self.events.append("shutdown")
@@ -177,6 +181,7 @@ class FakeBot:
 @pytest.fixture
 def fake_bot(monkeypatch):
     FakeBot.instances = []
+    FakeBot.initialize_error = None
     monkeypatch.setattr(merge, "Bot", FakeBot)
     return FakeBot
 
@@ -228,3 +233,30 @@ class TestTelegramNotifier:
 
         assert asyncio.run(notifier.get_updates()) == ["update"]
         assert fake_bot.instances[0].events == ["initialize", "get_updates", "shutdown"]
+
+    def test_a_rejected_token_is_not_echoed_and_the_bot_is_shut_down(self, fake_bot):
+        secret = "123456:secret-token"
+        network_error = ConnectionError("Unauthorized")
+        rejected = InvalidToken(f"The token `{secret}` was rejected by the server.")
+        rejected.__cause__ = network_error
+        fake_bot.initialize_error = rejected
+
+        for run in (
+            lambda: asyncio.run(merge.TelegramNotifier(token=secret, chat_id="c").send("hi")),
+            lambda: asyncio.run(merge.TelegramNotifier(token=secret, chat_id="c").__aenter__()),
+        ):
+            with pytest.raises(InvalidToken) as excinfo:
+                run()
+
+            assert secret not in str(excinfo.value)
+            assert excinfo.value.__cause__ is network_error
+
+        assert [bot.events for bot in fake_bot.instances] == [["initialize", "shutdown"]] * 2
+
+    def test_any_other_initialisation_failure_shuts_the_bot_down_and_propagates(self, fake_bot):
+        fake_bot.initialize_error = TimeoutError("getMe timed out")
+
+        with pytest.raises(TimeoutError, match="getMe timed out"):
+            asyncio.run(merge.TelegramNotifier(token="t", chat_id="c").__aenter__())
+
+        assert fake_bot.instances[0].events == ["initialize", "shutdown"]
