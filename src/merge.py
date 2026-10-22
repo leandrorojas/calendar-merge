@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import re
+import tempfile
+import urllib.request
 import uuid
 
 # partial imports
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -19,20 +21,137 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import click
-import pyfangs.telegram as tg
-import pyfangs.terminal as term
+import yaml
 from caldav.davclient import DAVClient
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
 from icalendar import Calendar, Event
-from pyfangs.filesystem import FileSystem
-from pyfangs.time import convert_to_utc
-
-# custom imports
-from pyfangs.yaml import YamlError, YamlHelper
 from pyicloud import PyiCloudService
 from pyicloud.services.calendar import EventObject
+from telegram import Bot, Update
+from telegram.constants import ParseMode
+from telegram.error import InvalidToken
+
+# region Terminal, YAML and filesystem helpers
+
+
+class TerminalColors(Enum):
+    cyan = "\033[36m"
+    green = "\033[32m"
+    orange = "\033[33m"
+    blue = "\033[34m"
+    magenta = "\033[35m"
+    red = "\033[31m"
+    yellow = "\033[33m"
+    reset = "\033[0m"
+
+
+TERMINAL_TIMESTAMP_FORMAT = "%Y.%m.%d %H:%M:%S.%f"
+
+
+def term_print(msg: str, finish_line: bool = True) -> None:
+    """Print *msg* behind a timestamp; `finish_line=False` leaves the line open for `print_done`/`print_failed`."""
+    stamp = f"[{datetime.now().strftime(TERMINAL_TIMESTAMP_FORMAT)}]: "
+    print(stamp + msg, end="\n" if finish_line else "")
+
+
+def print_done() -> None:
+    print(TerminalColors.green.value + "done!" + TerminalColors.reset.value)
+
+
+def print_failed() -> None:
+    print(TerminalColors.red.value + "failed!" + TerminalColors.reset.value)
+
+
+def print_header_box(title: str, subtitle: str | None = None, padding: int = 4) -> None:
+    lines = [title, subtitle] if subtitle else [title]
+    inner_width = max(len(line) for line in lines) + padding * 2
+    print("╔" + "═" * inner_width + "╗")
+    for line in lines:
+        print("║" + line.center(inner_width) + "║")
+    print("╚" + "═" * inner_width + "╝")
+
+
+def convert_to_utc(dt: datetime) -> datetime:
+    """Convert to UTC, reading a naive datetime as already UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+class YamlError(Exception):
+    """A YAML file could not be read or lacks the requested section or setting."""
+
+
+class YamlHelper:
+    def __init__(self, filename: str | Path):
+        self.path = Path(filename)
+
+    def get(self, key: str, setting: str) -> Any:
+        """Read one setting from one section, raising YamlError with a message that says which was missing."""
+        if not self.path.exists():
+            raise YamlError(f"File not found: {self.path}")
+
+        try:
+            with self.path.open("r", encoding="utf-8") as yaml_file:
+                data = yaml.load(yaml_file, Loader=yaml.SafeLoader)
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            loc = f" (line {mark.line + 1}, col {mark.column + 1})" if mark else ""
+            raise YamlError(f"YAML parse error{loc}: {e}") from e
+        except Exception as e:
+            raise YamlError(f"Failed to read YAML: {e}") from e
+
+        if data is None:
+            raise YamlError(f"Empty or invalid YAML in {self.path}")
+
+        try:
+            section = data[key]
+        except KeyError as e:
+            raise YamlError(f"Missing key: {e}") from e
+
+        try:
+            return section[setting]
+        except KeyError as e:
+            raise YamlError(f"Missing setting: {e}") from e
+
+
+class FileSystemError(Exception):
+    pass
+
+
+class FileSystem:
+    def download(self, url: str, filename: str) -> None:
+        try:
+            urllib.request.urlretrieve(url, filename)
+        except Exception as e:
+            raise FileSystemError(f"Error downloading {filename}: {e}") from e
+
+    def get_temp_dir(self) -> str:
+        return tempfile.gettempdir()
+
+    def join_paths(self, *paths: str) -> str:
+        return "/".join(paths)
+
+
+class ConfigReader(Protocol):
+    """What the merge reads of `YamlHelper`, so tests can pass a fake without loosening to `Any`."""
+
+    def get(self, key: str, setting: str, /) -> Any: ...
+
+
+class FileFetcher(Protocol):
+    """What the merge uses of `FileSystem`."""
+
+    def download(self, url: str, filename: str, /) -> None: ...
+
+    def get_temp_dir(self) -> str: ...
+
+    def join_paths(self, *paths: str) -> str: ...
+
+
+# endregion
 
 # region CONSTS
 YAML_FILENAME = "config.yaml"
@@ -220,10 +339,10 @@ HTTP_NOT_FOUND = 404
 # so file logs stay clean.
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
-TAG_2F_AUTH = term.TerminalColors.magenta.value + "2f_auth" + term.TerminalColors.reset.value
-TAG_CALENDAR_MERGE = term.TerminalColors.cyan.value + "cal-merge" + term.TerminalColors.reset.value
-TAG_ICLOUD_AUTH = term.TerminalColors.orange.value + "icloud_auth" + term.TerminalColors.reset.value
-TAG_ERROR = term.TerminalColors.red.value + "error" + term.TerminalColors.reset.value
+TAG_2F_AUTH = TerminalColors.magenta.value + "2f_auth" + TerminalColors.reset.value
+TAG_CALENDAR_MERGE = TerminalColors.cyan.value + "cal-merge" + TerminalColors.reset.value
+TAG_ICLOUD_AUTH = TerminalColors.orange.value + "icloud_auth" + TerminalColors.reset.value
+TAG_ERROR = TerminalColors.red.value + "error" + TerminalColors.reset.value
 # endregion
 
 
@@ -612,7 +731,7 @@ def _validate_2fa_2sa(api: PyiCloudService) -> bool:
     # The picker itself is terminal-only, so the user can still tell devices apart
     # without any of it reaching the log file.
     for i, device in enumerate(devices):
-        term.print(f"{get_tag(TAG_2F_AUTH)}   {i}: {_describe_trusted_device(device)}", True)
+        term_print(f"{get_tag(TAG_2F_AUTH)}   {i}: {_describe_trusted_device(device)}", True)
 
     device = click.prompt(f"{get_tag(TAG_2F_AUTH)} Which device would you like to use?", default=0)
     device = devices[device]
@@ -728,13 +847,91 @@ def get_tag(tag: str) -> str:
 
 
 def print_step(tag: str, message: str, one_liner: bool = True):
-    term.print(f"{get_tag(tag)} {message}", one_liner)
+    term_print(f"{get_tag(tag)} {message}", one_liner)
     # Mirror to the persistent log, stripped of ANSI color codes.
     level = logging.ERROR if _strip_ansi(tag) == "error" else logging.INFO
     logger.log(level, "[%s] %s", _strip_ansi(tag), message)
 
 
 # region Telegram helpers
+
+
+class UpdateSource(Protocol):
+    async def get_updates(
+        self, *, offset: int | None = None, timeout: int = 0, allowed_updates: Sequence[str] | None = None
+    ) -> Sequence[Update]: ...
+
+
+class TelegramNotifier:
+    """Async wrapper around python-telegram-bot for sending messages and reading replies.
+
+    Every Bot is released with `shutdown()`, never `close()`: `Bot.close` is the Bot API
+    method that closes the bot on the server, and Telegram answers it with 429 for the
+    first ten minutes after launch -- an error that would replace the real one.
+    """
+
+    def __init__(self, token: str, chat_id: str):
+        self.token = token
+        self.chat_id = chat_id
+        self.bot: Bot | None = None
+
+    async def _open_bot(self) -> Bot:
+        """Return an initialised Bot, shutting it down again if initialisation fails.
+
+        `Bot.initialize` calls getMe, and a rejected token comes back as an `InvalidToken`
+        whose message contains the token itself. That message reaches the terminal, the
+        log and the failure alert, so it is replaced with one that does not.
+        """
+        bot = Bot(token=self.token)
+        try:
+            await bot.initialize()
+        except InvalidToken as err:
+            await bot.shutdown()
+            raise InvalidToken("The bot token was rejected by the server.") from err.__cause__
+        except BaseException:
+            await bot.shutdown()
+            raise
+        return bot
+
+    async def __aenter__(self):
+        self.bot = await self._open_bot()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
+    async def close(self):
+        if self.bot:
+            bot, self.bot = self.bot, None
+            await bot.shutdown()
+
+    async def _with_bot(self, func: Callable[[Bot], Awaitable]):
+        """Run *func* on the shared Bot when inside `async with`, else on a short-lived one."""
+        if self.bot:
+            return await func(self.bot)
+        bot = await self._open_bot()
+        try:
+            return await func(bot)
+        finally:
+            await bot.shutdown()
+
+    async def send(self, message: str, parse_mode: str = ParseMode.MARKDOWN):
+        async def _send(bot: Bot):
+            return await bot.send_message(chat_id=self.chat_id, text=message, parse_mode=parse_mode)
+
+        return await self._with_bot(_send)
+
+    async def get_updates(
+        self,
+        offset: int | None = None,
+        limit: int = 100,
+        timeout: int = 0,
+        allowed_updates: Sequence[str] | None = None,
+    ) -> Sequence[Update]:
+        async def _get_updates(bot: Bot):
+            return await bot.get_updates(offset=offset, limit=limit, timeout=timeout, allowed_updates=allowed_updates)
+
+        return await self._with_bot(_get_updates)
 
 
 def send_telegram_message(message: str, disable_notification: bool = False) -> bool:
@@ -758,7 +955,7 @@ def send_telegram_message(message: str, disable_notification: bool = False) -> b
         try:
             return asyncio.run(coro)
         except Exception as err:  # pragma: no cover - safety net
-            term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+            term_print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
             return False
     # Fire-and-forget inside a running loop: delivery cannot be confirmed here, and
     # reporting success without knowing is the failure this return value exists to
@@ -777,15 +974,15 @@ def _get_telegram_credentials() -> tuple[str, str] | None:
     token = os.getenv(ENV_TELEGRAM_TOKEN)
     chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
     if not token:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
+        term_print(f"{get_tag(TAG_ERROR)} Telegram token not configured", True)
         return None
     if not chat_id:
-        term.print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
+        term_print(f"{get_tag(TAG_ERROR)} Telegram chat id not configured", True)
         return None
     return token, chat_id
 
 
-async def _send_via_notifier(notifier: tg.TelegramNotifier, message: str, disable_notification: bool = False) -> None:
+async def _send_via_notifier(notifier: Any, message: str, disable_notification: bool = False) -> None:
     """Send a message using whichever method the notifier supports."""
     if hasattr(notifier, "send_message"):
         await notifier.send_message(message=message, disable_notification=disable_notification)
@@ -795,7 +992,7 @@ async def _send_via_notifier(notifier: tg.TelegramNotifier, message: str, disabl
         await notifier.send(message)
 
 
-async def _close_notifier(notifier: tg.TelegramNotifier) -> None:
+async def _close_notifier(notifier: Any) -> None:
     """Safely close a notifier that wasn't opened via async-with."""
     close_fn = getattr(notifier, "close", None)
     if close_fn:
@@ -814,7 +1011,7 @@ async def send_telegram_message_async(message: str, disable_notification: bool =
         return False
     token, chat_id = creds
 
-    notifier_factory = tg.TelegramNotifier
+    notifier_factory = TelegramNotifier
     if hasattr(notifier_factory, "__aenter__"):
         async with notifier_factory(token=token, chat_id=chat_id) as notifier:
             await _send_via_notifier(notifier, message, disable_notification)
@@ -841,7 +1038,7 @@ def prompt_telegram_reply(
     try:
         return asyncio.run(_wait_for_telegram_reply(prompt, after_send, accept))
     except Exception as err:
-        term.print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
+        term_print(f"{get_tag(TAG_ERROR)} Unexpected Telegram error: {err}", True)
         return None
 
 
@@ -863,14 +1060,14 @@ def _usable_reply_text(update, mark: datetime, accept: Callable[[str], bool] | N
         return None
 
     if accept is not None and not accept(msg.text):
-        term.print(f"{get_tag(TAG_2F_AUTH)} ignoring reply that is not a 6-digit code", True)
+        term_print(f"{get_tag(TAG_2F_AUTH)} ignoring reply that is not a 6-digit code", True)
         return None
 
     return msg.text
 
 
 async def _poll_telegram_updates(
-    notifier: tg.TelegramNotifier,
+    notifier: UpdateSource,
     mark: datetime,
     timeout_seconds: int,
     accept: Callable[[str], bool] | None = None,
@@ -893,7 +1090,7 @@ async def _poll_telegram_updates(
             if text is not None:
                 return text
 
-    term.print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
+    term_print(f"{get_tag(TAG_ERROR)} Timed out waiting for Telegram reply", True)
     return None
 
 
@@ -907,10 +1104,10 @@ async def _wait_for_telegram_reply(
         return None
     token, chat_id = creds
 
-    notifier_factory = tg.TelegramNotifier
+    notifier_factory = TelegramNotifier
     mark = datetime.now(UTC)
 
-    async def _send_and_poll(notifier: tg.TelegramNotifier) -> str | None:
+    async def _send_and_poll(notifier: TelegramNotifier) -> str | None:
         await _send_via_notifier(notifier, prompt)
         if after_send:
             after_send()
@@ -951,7 +1148,7 @@ def _normalize_skip_days(skip_days) -> list[str]:
     return [str(day) for day in skip_days]
 
 
-def _resolve_source_skip_days(yaml_helper: YamlHelper, section: str, default_skip_days: list[str]) -> list[str]:
+def _resolve_source_skip_days(yaml_helper: ConfigReader, section: str, default_skip_days: list[str]) -> list[str]:
     """Return a source's own skip_days, falling back to the global setting.
 
     The YamlError is caught deliberately and must not escape: main() treats a
@@ -1458,9 +1655,9 @@ def _sync_events_to_icloud(
     log matters most -- a partial sync, where the calendar alone cannot tell you
     whether anything ran -- is the one case it stayed silent about.
 
-    Owning `term.print_done()` comes with that: the caller opens an unterminated
+    Owning `print_done()` comes with that: the caller opens an unterminated
     "synchronizing..." line, and anything printed before it is closed lands glued to
-    it. Since the failure path already closes the line via `term.print_failed()`,
+    it. Since the failure path already closes the line via `print_failed()`,
     both ends now belong here.
     """
     outcome = SyncOutcome()
@@ -1468,8 +1665,8 @@ def _sync_events_to_icloud(
         _apply_event_actions(calendar_service, calendar_guid, calendar_tz, merge_events, outcome)
         # Completes the caller's pending "synchronizing..." line before the summary is
         # written, or the summary is appended to that line and "done!" is orphaned.
-        # The failure path is already closed by term.print_failed() at the raise site.
-        term.print_done()
+        # The failure path is already closed by print_failed() at the raise site.
+        print_done()
     finally:
         summary = f"{source_tag}: {outcome.added} added, {outcome.deleted} deleted"
         if outcome.already_gone:
@@ -1496,7 +1693,7 @@ def _apply_event_actions(
                 )
                 outcome.added += 1
             except Exception as err:
-                term.print_failed()
+                print_failed()
                 raise RuntimeError(f"Unable to add event {merge_event.title}") from err
         elif merge_event.action == EventAction.delete:
             assert merge_event.full_event is not None
@@ -1513,7 +1710,7 @@ def _apply_event_actions(
                 # because the loop in main() only catches YamlError -- so one event
                 # removed from a phone would sink the whole run.
                 if not _is_missing_event_error(err):
-                    term.print_failed()
+                    print_failed()
                     raise RuntimeError(f"Unable to delete event {merge_event.title}") from err
                 # Logged rather than swallowed: if a systemic fault ever made every
                 # delete return 404, the merge would otherwise report success while
@@ -1527,7 +1724,7 @@ def _apply_event_actions(
 # region main flow helpers
 
 
-def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem, str | None]:
+def _load_config() -> tuple[ConfigReader, int, list[str], FileFetcher, str | None]:
     """Load .env, parse config.yaml, return (yaml_helper, future_event_days, skip_days, fs)."""
     print_step(TAG_CALENDAR_MERGE, "reading config...", one_liner=False)
     load_dotenv()
@@ -1536,19 +1733,19 @@ def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem, str | None]:
     try:
         yaml_helper = YamlHelper(config_path)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to open YAML configuration") from err
 
     try:
         future_event_days = int(yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_FUTURE_EVENTS_DAYS))
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Invalid future event days configuration") from err
 
     try:
         skip_days = yaml_helper.get(YAML_SECTION_GENERAL, YAML_SETTING_SKIP_DAYS)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to load skip days configuration") from err
     skip_days = _normalize_skip_days(skip_days)
     # Optional, and read through a local catch for the reason documented on
@@ -1562,7 +1759,7 @@ def _load_config() -> tuple[YamlHelper, int, list[str], FileSystem, str | None]:
     except YamlError:
         configured = None
     destination = str(configured).strip() if configured is not None else ""
-    term.print_done()
+    print_done()
     return yaml_helper, future_event_days, skip_days, fs, destination or None
 
 
@@ -1805,9 +2002,9 @@ def _authenticate_caldav(username: str, app_password: str) -> CalDavService:
         client = DAVClient(url=CALDAV_URL, username=username, password=app_password)
         service = CalDavService(CalDavCalendarService(client))
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to start iCloud CalDAV service") from err
-    term.print_done()
+    print_done()
     return service
 
 
@@ -1818,20 +2015,20 @@ def _authenticate_icloud() -> PyiCloudService:
     try:
         icloud_service = PyiCloudService(os.getenv(ENV_ICLOUD_USER), os.getenv(ENV_ICLOUD_PASS))
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to start iCloud service") from err
 
     try:
         if not validate_2fa(icloud_service):
-            term.print_failed()
+            print_failed()
             raise RuntimeError("2FA validation failed")
     except RuntimeError:
-        term.print_failed()
+        print_failed()
         raise
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("2FA validation error") from err
-    term.print_done()
+    print_done()
     return icloud_service
 
 
@@ -1897,7 +2094,7 @@ def _load_icloud_events(
     try:
         calendars = calendar_service.get_calendars()
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to fetch calendars") from err
 
     # _select_destination_calendar raises rather than returning an empty guid, so there
@@ -1906,7 +2103,7 @@ def _load_icloud_events(
     try:
         calendar_guid = _select_destination_calendar(calendars, destination)
     except RuntimeError:
-        term.print_failed()
+        print_failed()
         raise
 
     # Both bounds are day-aligned, and that is a correctness requirement rather than
@@ -1927,7 +2124,7 @@ def _load_icloud_events(
     try:
         all_icloud_events = calendar_service.get_events(from_dt=filter_start, to_dt=filter_end)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError("Unable to load events from iCloud") from err
 
     icloud_events = _collect_icloud_events(all_icloud_events)
@@ -1937,7 +2134,7 @@ def _load_icloud_events(
     cut_off_candidate = _calculate_future_date(now, future_event_days, skip_days)
     cut_off_date = _end_of_day(cut_off_candidate)
 
-    term.print_done()
+    print_done()
     return calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now
 
 
@@ -1963,11 +2160,11 @@ class SourceConfigOutcome(Enum):
 def _classify_source_config_error(err: YamlError) -> SourceConfigOutcome:
     """Sort a `YamlError` into end-of-list, broken calendar, or unusable file.
 
-    pyfangs distinguishes them only by message prefix -- "Missing key: '<section>'",
+    `YamlHelper` distinguishes them only by message prefix -- "Missing key: '<section>'",
     "Missing setting: '<name>'", and four file-level forms. That coupling to message
     text is deliberate and monitored: `TestYamlErrorShapes` pins the shapes against the
-    real `YamlHelper`, so a change to pyfangs' wording fails the build rather than
-    silently reclassifying an error.
+    real `YamlHelper`, so a change to its wording fails the build rather than silently
+    reclassifying an error.
 
     Defaulting the unknown case to `unusable` is the safe choice: treating a file-level
     fault as a broken section logged it once per index and reported more failures than
@@ -1998,9 +2195,9 @@ def _summarise_source_failures(failures: list[tuple[str, str]], attempted: int) 
 
 
 def _process_source_calendar(
-    yaml_helper: YamlHelper,
+    yaml_helper: ConfigReader,
     source_index: int,
-    fs: FileSystem,
+    fs: FileFetcher,
     now: datetime,
     default_skip_days: list[str],
     utc_today_bod: datetime,
@@ -2025,7 +2222,7 @@ def _process_source_calendar(
         calendar_title = yaml_helper.get(section, YAML_SETTING_CALENDAR_TITLE)
         calendar_tz = ZoneInfo(yaml_helper.get(section, YAML_SETTING_CALENDAR_TZ))
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Invalid calendar configuration at index {source_index}") from err
 
     # Optional per-source override; the section is known to exist by now because
@@ -2034,27 +2231,27 @@ def _process_source_calendar(
 
     calendar_url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=source_index))
     if not calendar_url:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Missing calendar URL for index {source_index}")
-    term.print_done()
+    print_done()
 
     print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", one_liner=False)
     timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
     try:
         fs.download(calendar_url, timestamp_filename)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Unable to download calendar {calendar_source} [{source_index}]") from err
-    term.print_done()
+    print_done()
 
     print_step(TAG_CALENDAR_MERGE, f"reading source calendar from {timestamp_filename}...", one_liner=False)
     try:
         with open(timestamp_filename, "rb") as ics_file:
             ics_calendar = Calendar.from_ical(ics_file.read())
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Unable to parse calendar {calendar_source} [{source_index}]") from err
-    term.print_done()
+    print_done()
 
     print_step(
         TAG_CALENDAR_MERGE,
@@ -2068,30 +2265,30 @@ def _process_source_calendar(
     try:
         source_calendar_events = _parse_source_events(ics_calendar, skip_days, utc_today_bod, utc_cut_off_date)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Unable to read events from calendar {calendar_source} [{source_index}]") from err
-    term.print_done()
+    print_done()
 
     source_tag = f"[{calendar_tag}] {calendar_title}/{calendar_source}"
     print_step(TAG_CALENDAR_MERGE, f"filtering {source_tag} events in iCloud calendar...", one_liner=False)
     try:
         filtered_icloud_events = _select_source_icloud_events(icloud_events, source_tag, skip_days)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Unable to select iCloud events for {source_tag}") from err
-    term.print_done()
+    print_done()
 
     print_step(TAG_CALENDAR_MERGE, "reconciling events...", one_liner=False)
     try:
         merge_events, event_addition = _reconcile_events(filtered_icloud_events, source_calendar_events)
     except Exception as err:
-        term.print_failed()
+        print_failed()
         raise RuntimeError(f"Unable to reconcile events for {source_tag}") from err
     if event_addition:
         for event in merge_events:
             if event.action == EventAction.add:
                 event.title = source_tag
-    term.print_done()
+    print_done()
 
     print_step(TAG_CALENDAR_MERGE, "synchronizing events to iCloud calendar...", one_liner=False)
     # Reported per source rather than per run: a total says the merge did something,
@@ -2104,8 +2301,8 @@ def _process_source_calendar(
 
 
 def _process_all_source_calendars(
-    yaml_helper: YamlHelper,
-    fs: FileSystem,
+    yaml_helper: ConfigReader,
+    fs: FileFetcher,
     now: datetime,
     skip_days: list[str],
     utc_today_bod: datetime,
@@ -2169,9 +2366,7 @@ def _process_all_source_calendars(
             # read the end of the list as a broken calendar and never terminate.
             print_step(
                 TAG_CALENDAR_MERGE,
-                term.TerminalColors.yellow.value
-                + "no more source calendars to process"
-                + term.TerminalColors.reset.value,
+                TerminalColors.yellow.value + "no more source calendars to process" + TerminalColors.reset.value,
                 one_liner=True,
             )
             break
@@ -2180,7 +2375,7 @@ def _process_all_source_calendars(
             # nothing to say so: on 2026-08-20 a single already-deleted event in
             # source 0 meant sources 1 and 2 were never processed at all.
             #
-            # term.print_failed() is deliberately not called -- every raise site in
+            # print_failed() is deliberately not called -- every raise site in
             # _process_source_calendar already closed its own pending line.
             failures.append((YAML_SECTION_SOURCE_CALENDAR.format(index=source_index), _describe_error(err)))
             logger.exception("source calendar %d failed", source_index)
@@ -2200,7 +2395,7 @@ def _run_and_report() -> None:
         main()
     except Exception as err:
         described = _describe_error(err)
-        term.print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
+        term_print(f"{get_tag(TAG_ERROR)} An error occurred during the merge process: {described}")
         logger.exception("Merge process failed")
         # Alert on the transition, not on every occurrence: a single upstream outage
         # spans several runs, and every alert after the first repeats what the first
@@ -2239,7 +2434,7 @@ def main():
 
     print_step(
         TAG_CALENDAR_MERGE,
-        term.TerminalColors.yellow.value + "processing source calendars" + term.TerminalColors.reset.value,
+        TerminalColors.yellow.value + "processing source calendars" + TerminalColors.reset.value,
         one_liner=True,
     )
     failures, attempted = _process_all_source_calendars(
@@ -2276,12 +2471,12 @@ def cli() -> None:
     logger.info("calendar-merge started")
 
     merge_start = perf_counter()
-    term.print_header_box("iCloud calendar merger")
+    print_header_box("iCloud calendar merger")
 
     _run_and_report()
 
     total = perf_counter() - merge_start
-    term.print_header_box("merge & sync completed", f"total time: {total:.3f} seconds")
+    print_header_box("merge & sync completed", f"total time: {total:.3f} seconds")
     logger.info("calendar-merge completed in %.3f seconds", total)
 
 

@@ -18,7 +18,7 @@ is whatever the machine running the merge thinks it is. Move the host across a t
 and the window silently shifts by a day.
 
 The rest of the codebase is disciplined about this — every datetime converts to UTC via
-`pyfangs.time.convert_to_utc` — so this one call is the sole coupling to local time.
+`convert_to_utc` — so this one call is the sole coupling to local time.
 
 **Deliberately deferred.** The host has not moved and the behaviour is arguably what a
 person wants: a calendar day should mean the day *where the user is*. Fixing it means

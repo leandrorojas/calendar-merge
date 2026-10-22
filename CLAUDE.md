@@ -34,15 +34,13 @@ Python is interpreted, and `security-events: write` is scoped to that job alone.
 is enabled; the `quality` suite is deliberately left off to avoid duplicating Ruff and SonarCloud.
 
 Dependabot runs both kinds of update. **Version** updates come from `.github/dependabot.yml`
-(the `uv` and `github-actions` ecosystems, with a `registries` entry so the private `pyfangs`
-repo can be reached). **Security** updates and alerts are repository settings rather than file
+(the `uv` and `github-actions` ecosystems). **Security** updates and alerts are repository settings rather than file
 configuration, enabled 2026-08-20 — note the API reports alerts as *disabled* by returning
 `404` from `GET /repos/{owner}/{repo}/vulnerability-alerts` and `204` when enabled, which reads
 like a permissions failure and is not one.
 
 CI (`.github/workflows/ci.yml`) runs these on push to `main` and on every pull request, split into
-two jobs: `lint` (Ruff only, no private deps needed) and `test-and-typecheck` (needs the
-`PYFANGS_DEPLOY_KEY` secret to install the private `pyfangs` dependency over SSH).
+two jobs: `lint` (Ruff only, no project dependencies) and `test-and-typecheck`.
 
 `uv.lock` is the single source of truth for pinned tool versions. The lint job reads it through
 `tools/pinned_versions.py` instead of repeating it, because Dependabot updates the lockfile and
@@ -69,7 +67,7 @@ the right version with an empty `hooks:` list runs nothing, so agreeing with the
 proves nothing — the same vacuous-pass failure the wheel-layout check had. `check()` evaluates every tool before
 raising, so a bump moving two does not hide one behind the other. The script imports only the standard library, so the step runs it with plain `python` rather
 than through `uv run`: there is no environment to resolve and nothing to build, which keeps
-the lint job free of the private dependency and its deploy key. Routing it through uv meant
+the lint job free of the project's dependencies. Routing it through uv meant
 either resolving dependencies it does not have or passing flags to suppress that.
 
 The resolved version reaches a shell, and `uv.lock` is a checked-in file a fork pull request can
@@ -108,8 +106,10 @@ can't leak between tests.
 
 Two conventions worth keeping:
 - Tests import via `from tests.conftest import ...` because `tests/` is a package.
-- `test_entrypoint.py` patches `pyfangs.yaml.YamlHelper` to force config load to fail, so the run
-  never reaches iCloud even on a machine that has a real `config.yaml` and `.env`.
+- `test_entrypoint.py` makes opening `config.yaml` fail, so the run never reaches iCloud even on a
+  machine that has a real `config.yaml` and `.env`. It patches `pathlib.Path` because `runpy`
+  re-executes the module and gives it fresh copies of everything defined in `merge.py`; terminal
+  output is therefore read from stdout there, not from `quiet_terminal`.
 
 ## Architecture
 
@@ -316,7 +316,7 @@ notices, which is worse for the calendar than syncing them and naming the broken
 **A `YamlError` from a source read means one of three things, not two.**
 `YamlHelper.get` re-reads `config.yaml` on every call and raises the same type when the section is
 absent, when a setting inside an existing section is missing, and when the file itself cannot be
-read. `_classify_source_config_error` sorts them by pyfangs' message prefix into
+read. `_classify_source_config_error` sorts them by `YamlHelper`'s message prefix into
 `SourceConfigOutcome.absent` (the list has ended), `malformed` (this calendar fails, the rest
 proceed) and `unusable` (the file — stop at once).
 
@@ -327,7 +327,7 @@ failures than the user has calendars, because every later index re-reads the sam
 unknown case defaults to `unusable`, which stops rather than retries.
 
 That coupling to message text is deliberate and monitored: `TestYamlErrorShapes` pins all three
-against the **real** `YamlHelper`, so a change to pyfangs' wording fails the build rather than
+against the **real** `YamlHelper`, so a change to its wording fails the build rather than
 silently reclassifying. The fakes in `conftest.py` mirror the shapes for the same reason — fakes
 that blurred them hid the distinction entirely, and fixing them surfaced thirteen failures at once.
 
@@ -618,7 +618,8 @@ SMS, the class patch in `_disable_automatic_2fa_requests` is not holding.
 
 ## Dependencies
 
-- `pyfangs` (v0.7.3) — private library (`ssh://git@github.com/leandrorojas/pyfangs`): provides YamlHelper, FileSystem, terminal colors, Telegram (TelegramNotifier), and UTC conversion. The AI (GeminiAI) and DB (Postgres) modules are available as optional extras but not used here.
+- `python-telegram-bot` (22.8) — behind `TelegramNotifier`. A `Bot` is released with `shutdown()`, never `close()`: `Bot.close` is the Bot API method that closes the bot on the server, and Telegram answers it with 429 for the first ten minutes after launch, which replaces the real error. Not confirmed against a live failure.
+- `pyyaml` — behind `YamlHelper`.
 - `pyicloud` (2.6.5) — iCloud API (calendar service, HSA2 2FA via trusted-device bridge)
 - `icalendar` — ICS file parsing
 - `click` — used for interactive 2FA prompts. Declared directly in `pyproject.toml`: it used to arrive transitively via pyicloud, which dropped it in 2.6.5, so `import click` broke the moment that bump was attempted.
@@ -638,7 +639,7 @@ SMS, the class patch in `_disable_automatic_2fa_requests` is not holding.
 
 ## Conventions
 
-- All datetime handling converts to UTC internally via `pyfangs.time.convert_to_utc`
+- All datetime handling converts to UTC internally via `convert_to_utc`
 - Telegram messaging is async with sync wrappers; supports both context-manager and plain TelegramNotifier instantiation
 - A `Co-Authored-By` trailer is allowed on commits made by Claude Code, reversing the earlier
   "no `Co-Authored-By` lines" rule as of 2026-09-10.

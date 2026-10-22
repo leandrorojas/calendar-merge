@@ -5,10 +5,10 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
-from pyfangs.yaml import YamlError
-from pyfangs.yaml import YamlHelper as RealYamlHelper
 
 import merge
+from merge import YamlError
+from merge import YamlHelper as RealYamlHelper
 from tests.conftest import (
     BA_TZ,
     FakeCalendarService,
@@ -899,11 +899,11 @@ class TestSourceFailureSummary:
 
 
 class TestYamlErrorShapes:
-    """Pins the pyfangs messages `main()` uses to tell the two cases apart.
+    """Pins the `YamlHelper` messages `main()` uses to tell the two cases apart.
 
     `_source_section_is_absent` reads the message text, because `YamlHelper.get` raises
     the same type for an absent section and a missing setting inside an existing one.
-    Asserted against the real helper, not a fake: if pyfangs changes its wording, this
+    Asserted against the real helper, not a fake: if the wording changes, this
     fails loudly instead of silently restoring the skip-every-later-calendar bug.
     """
 

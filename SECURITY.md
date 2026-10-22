@@ -21,7 +21,7 @@ The following are in scope:
 - Dependency vulnerabilities with a practical impact here
 
 Out of scope:
-- Issues in upstream libraries (`pyicloud`, `pyfangs`, `icalendar`) — please
+- Issues in upstream libraries (`pyicloud`, `python-telegram-bot`, `icalendar`) — please
   report those to their maintainers.
 
 ## Response

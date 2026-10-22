@@ -121,9 +121,10 @@ dependencies = [
     { name = "click" },
     { name = "dotenv" },
     { name = "icalendar" },
-    { name = "pyfangs" },
     { name = "pyicloud" },
     { name = "python-dateutil" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -143,11 +144,12 @@ requires-dist = [
     { name = "icalendar", specifier = ">=7.2.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.6.2" },
-    { name = "pyfangs", git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.7.3" },
     { name = "pyicloud", specifier = "==2.6.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "python-dateutil", specifier = ">=2.9" },
+    { name = "python-telegram-bot", specifier = ">=22.8" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.6" },
 ]
 provides-extras = ["dev"]
@@ -1290,16 +1292,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/64/d3/84c282a7eee1d3ac4c0377546ef5a1ea436ce26840d9ac3b7ed54a377507/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl", hash = "sha256:3009f12e4e90b7f88b4f9adb1b0c4a3d58fe7820f3238c190047209d148026df", size = 1936024, upload-time = "2026-05-06T13:40:15.671Z" },
     { url = "https://files.pythonhosted.org/packages/d7/ca/eac61596cdeb4d7e174d3dc0bd8a6238f14f75f97a24e7b7db4c7e7340a0/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ad785e92e6dc634c21555edc8bd6b64957ab844541bcb96a1366c202951ae526", size = 1990696, upload-time = "2026-05-06T13:38:34.717Z" },
     { url = "https://files.pythonhosted.org/packages/fa/c3/7c8b240552251faf6b3a957db200fcfbbcec36763c050428b601e0c9b83b/pydantic_core-2.46.4-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:00c603d540afdd6b80eb39f078f33ebd46211f02f33e34a32d9f053bba711de0", size = 2147590, upload-time = "2026-05-06T13:39:29.883Z" },
-]
-
-[[package]]
-name = "pyfangs"
-version = "0.7.3"
-source = { git = "ssh://git@github.com/leandrorojas/pyfangs?rev=v0.7.3#e974b8189b019574c44df89bb583a4a387842331" }
-dependencies = [
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "tzlocal" },
 ]
 
 [[package]]
