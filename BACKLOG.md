@@ -51,8 +51,7 @@ where the rule fails. This has a second consequence worth stating: the 1499 deta
 `vf` are *all* excluded today, which is right for 1497 of them but would silently drop any real
 meeting the user marks Public.
 
-**Do not "fix" this by switching to the secret iCal address.** An earlier revision of this entry
-recommended it. It would publish `TRANSP:OPAQUE` on real meetings and the Google branch would
+**Do not "fix" this by switching to the secret iCal address.** It would publish `TRANSP:OPAQUE` on real meetings and the Google branch would
 then skip the *entire* feed -- the ≤ v0.1.5 failure that imported 0 of 158 Outlook events,
 replayed on the largest source. Making a full-detail Google feed work needs a code change:
 the Google branch would have to be retired in favour of a signal that survives full detail,

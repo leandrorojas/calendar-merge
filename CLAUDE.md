@@ -159,8 +159,7 @@ Both mistakes have already shipped, so neither rule may be applied universally:
   Google work calendar — `lunch`, `no meeting time`, `Out of office - Pick Up Kids`.
 
 Measured on the three live feeds: Google work 1630 events (not 3148), Google personal 4, Outlook
-144 (not 0). Corroboration for the Google split: `ATTENDEE` appears on exactly the 1630 meetings
-and `STATUS:CONFIRMED` on exactly the 1518 blocks, so two other properties agree with `TRANSP`.
+144 (not 0).
 
 **The Google rule is predicated on a detail-stripped feed, and breaks if that ever changes.**
 "Real meetings carry no `TRANSP`" is not a property of Google. It is a property of these
@@ -379,11 +378,11 @@ Confirmed against the maintained fork's tracker (`timlaing/pyicloud`, the repo p
 2.6.5 ships from) on 2026-09-06. Issue
 [#26](https://github.com/timlaing/pyicloud/issues/26) is the standing report, opened
 2025-01-08 and closed as stale 2026-01-10 with no fix. The maintainer's finding, 2025-04-06:
-Apple removed app-password login from the iCloud web API, leaving it only on the mail-family
-*protocols* — CalDAV, CardDAV and IMAP. Read the carve-out as being about those protocols, not
-about a "Calendar web service" that still takes an app password: there is no such thing, which
-is why the old flow authenticated with the account password and merely *refreshed* the session
-token with an app password. It was that refresh that was withdrawn.
+Apple removed app-password login for web services, "excluding mail related services
+[Contacts/Calendar]", and the old flow only used an app password to *refresh* a session the
+account password had opened. Our reading, not the maintainer's: the carve-out is the mail-family
+*protocols* — CalDAV, CardDAV and IMAP — and not a "Calendar web service" that still takes an
+app password. The maintainer added that they were still looking for another method.
 
 CalDAV is that carve-out, so the adapter is not a workaround for a missing feature — it is
 the only remaining route to this data with an app-specific password, and a contribution to
@@ -391,7 +390,7 @@ pyicloud's web API could not exist.
 
 **Any report that app passwords "work" on the web API is a session-cache artifact.** The
 same issue carries a confident confirmation that they work, five endorsements and a
-maintainer's thanks — retracted the next day. The tell is the sequence: the app password
+maintainer's thanks — retracted on 2025-04-07, two months later. The tell is the sequence: the app password
 fails, the account password succeeds, and the app password then works for about eight hours
 until the session lapses. It never authenticated; it rode a session the account password had
 opened. Re-test only from a cold session, or this measures nothing.
