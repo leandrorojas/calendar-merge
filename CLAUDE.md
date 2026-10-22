@@ -34,11 +34,10 @@ Python is interpreted, and `security-events: write` is scoped to that job alone.
 is enabled; the `quality` suite is deliberately left off to avoid duplicating Ruff and SonarCloud.
 
 A `py/clear-text-logging-sensitive-data` alert on `term_print` is a known false positive. Its
-flows all start in `_describe_trusted_device`, which shows a device's display name or `****` plus
-the last four digits of its number, on the terminal only, so the user can pick which device gets
-the 2FA code. CodeQL has no sanitizer for the masking, and satisfying it would mean hiding the
-label the picker exists to show. Check a new alert's flow against that before reading it as the
-same one.
+flows all start in `_describe_trusted_device`, whose masked output the 2FA device picker needs, and
+CodeQL has no sanitizer for the masking. It stays harmless only while the picker lines use
+`term_print` and never `print_step`, which mirrors into the log file; stdout is not private if the
+job's output is captured. Check a new alert's flow against that before reading it as the same one.
 
 Dependabot runs both kinds of update. **Version** updates come from `.github/dependabot.yml`
 (the `uv` and `github-actions` ecosystems). **Security** updates and alerts are repository settings rather than file
