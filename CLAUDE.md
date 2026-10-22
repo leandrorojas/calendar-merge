@@ -33,6 +33,12 @@ schedule, so newly published queries reach code that has not changed. It needs n
 Python is interpreted, and `security-events: write` is scoped to that job alone. `security-extended`
 is enabled; the `quality` suite is deliberately left off to avoid duplicating Ruff and SonarCloud.
 
+A `py/clear-text-logging-sensitive-data` alert on `term_print` is a known false positive. Its
+flows all start in `_describe_trusted_device`, whose masked output the 2FA device picker needs, and
+CodeQL has no sanitizer for the masking. It stays harmless only while the picker lines use
+`term_print` and never `print_step`, which mirrors into the log file; stdout is not private if the
+job's output is captured. Check a new alert's flow against that before reading it as the same one.
+
 Dependabot runs both kinds of update. **Version** updates come from `.github/dependabot.yml`
 (the `uv` and `github-actions` ecosystems). **Security** updates and alerts are repository settings rather than file
 configuration, enabled 2026-08-20 — note the API reports alerts as *disabled* by returning
