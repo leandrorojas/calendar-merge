@@ -112,8 +112,10 @@ LONGEST_PERIOD_SECONDS = {
 # TRANSP means different things in practice depending on who wrote the feed, so
 # the same value cannot be interpreted the same way everywhere.
 #
-# Google publishes real meetings with no TRANSP at all and writes an explicit
-# value only for time you blocked yourself -- lunch, focus time, out of office.
+# On the detail-stripped feeds used here, Google publishes real meetings with no
+# TRANSP at all and writes an explicit value only for time you blocked yourself --
+# lunch, focus time, out of office. A full-detail Google feed stamps TRANSP on
+# every event, so this rule would skip all of it (see CLAUDE.md).
 # On a shared work calendar those blocks carry TRANSP:OPAQUE, so on a Google feed
 # the *presence* of TRANSP is the signal to skip, whichever value it holds.
 #

@@ -159,8 +159,27 @@ Both mistakes have already shipped, so neither rule may be applied universally:
   Google work calendar — `lunch`, `no meeting time`, `Out of office - Pick Up Kids`.
 
 Measured on the three live feeds: Google work 1630 events (not 3148), Google personal 4, Outlook
-144 (not 0). Corroboration for the Google split: `ATTENDEE` appears on exactly the 1630 meetings
-and `STATUS:CONFIRMED` on exactly the 1518 blocks, so two other properties agree with `TRANSP`.
+144 (not 0).
+
+**The Google rule is predicated on a detail-stripped feed, and breaks if that ever changes.**
+"Real meetings carry no `TRANSP`" is not a property of Google. It is a property of these
+particular URLs: both Google feeds are published at addresses that hide event details, so
+Google reduces anything not explicitly marked Public to `SUMMARY:Busy` with `TRANSP`, `CLASS`
+and `STATUS` removed. Measured 2026-09-10 -- `vf` splits 2063 stripped / 1499 detailed with
+nothing off-diagonal, `gmail` 10 stripped / 1 detailed. The rule therefore reads *whether
+details were published*, and only tracks intent because the self-blocks are overwhelmingly the
+Public ones.
+
+So pointing either feed at its secret iCal address would **not** improve matters -- it would
+publish `TRANSP:OPAQUE` on real meetings and the Google branch would skip the entire feed. That
+is precisely the ≤ v0.1.5 failure above, and the Outlook feed shows what a full-detail feed looks
+like: `CLASS:PUBLIC` on all 170, `TRANSP:OPAQUE` on 157 genuine meetings. Restoring the rule on a
+full-detail Google feed is a code change, not a URL change.
+
+The corollary is that the 1499 detailed events on `vf` are *all* excluded today. That is correct
+for 1497 of them -- `no meeting time`, `lunch`, `Out of office - ...` -- but any real meeting the
+user marks Public would be dropped silently, which is the under-sync direction that hid the
+Outlook breakage for a release.
 
 Outlook `TENTATIVE` is **kept**, deliberately. It is the equivalent of a Google "maybe", and Google
 feeds strip `PARTSTAT` entirely (0 occurrences), so a "maybe" there is indistinguishable from an
@@ -353,6 +372,28 @@ this account, which stops pyicloud dead: its web API accepts nothing but the acc
 password, and pyicloud 2.6.5 has no app-specific-password support at all, so no
 configuration restores service. CalDAV accepts one, so `_authenticate_backend` picks it
 whenever `ICLOUD_APP_PASSWORD` is set and pyicloud otherwise.
+
+**That is Apple's restriction, not a pyicloud gap, so there is nothing to fix upstream.**
+Confirmed against the maintained fork's tracker (`timlaing/pyicloud`, the repo pyicloud
+2.6.5 ships from) on 2026-09-06. Issue
+[#26](https://github.com/timlaing/pyicloud/issues/26) is the standing report, opened
+2025-01-08 and closed as stale 2026-01-10 with no fix. The maintainer's finding, 2025-04-06:
+Apple removed app-password login for web services, "excluding mail related services
+[Contacts/Calendar]", and the old flow only used an app password to *refresh* a session the
+account password had opened. Our reading, not the maintainer's: the carve-out is the mail-family
+*protocols* — CalDAV, CardDAV and IMAP — and not a "Calendar web service" that still takes an
+app password. The maintainer added that they were still looking for another method.
+
+CalDAV is that carve-out, so the adapter is not a workaround for a missing feature — it is
+the only remaining route to this data with an app-specific password, and a contribution to
+pyicloud's web API could not exist.
+
+**Any report that app passwords "work" on the web API is a session-cache artifact.** The
+same issue carries a confident confirmation that they work, five endorsements and a
+maintainer's thanks — retracted on 2025-04-07, two months later. The tell is the sequence: the app password
+fails, the account password succeeds, and the app password then works for about eight hours
+until the session lapses. It never authenticated; it rode a session the account password had
+opened. Re-test only from a cold session, or this measures nothing.
 
 `CalDavCalendarService` is an adapter, not a rewrite. The rest of the module speaks
 exactly five operations -- `get_calendars`, `get_events`, `add_event`, `remove_event`,
@@ -599,4 +640,9 @@ SMS, the class patch in `_disable_automatic_2fa_requests` is not holding.
 
 - All datetime handling converts to UTC internally via `pyfangs.time.convert_to_utc`
 - Telegram messaging is async with sync wrappers; supports both context-manager and plain TelegramNotifier instantiation
-- No `Co-Authored-By` lines in commits
+- A `Co-Authored-By` trailer is allowed on commits made by Claude Code, reversing the earlier
+  "no `Co-Authored-By` lines" rule as of 2026-09-10.
+- **Never put a session link or any reference to a session in a commit message, a PR
+  description, or anything else that lands in the repository.** They are noise to every reader
+  who cannot open them, and they do not survive the session. This holds even when tooling
+  offers or mandates one -- strip it.
