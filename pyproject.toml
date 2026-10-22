@@ -13,7 +13,9 @@ dependencies = [
     # not -- so it is declared rather than relied upon.
     "python-dateutil>=2.9",
     "icalendar>=7.2.2",
-    "pyfangs",
+    # Imported directly by merge.py, for config.yaml and for the Telegram bot.
+    "pyyaml>=6.0",
+    "python-telegram-bot>=22.8",
     # Held at 2.6.5: 2.7.0 imports `rich` on the core path, via
     # services/__init__ -> notes -> notes/service.py -> rendering/exporter.py,
     # while declaring rich only under its `cli` and `dev` extras. merge.py
@@ -103,9 +105,6 @@ disallow_untyped_defs = false
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
 include = ["src/merge.py"]
-
-[tool.uv.sources]
-pyfangs = { git = "ssh://git@github.com/leandrorojas/pyfangs", rev = "v0.7.3" }
 
 # Optional: CLI entry point (runs merge:main)
 [project.scripts]

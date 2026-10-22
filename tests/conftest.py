@@ -72,10 +72,10 @@ def quiet_terminal(monkeypatch):
     messages without polluting pytest output.
     """
     lines: list[str] = []
-    monkeypatch.setattr(merge.term, "print", lambda msg, *a, **k: lines.append(str(msg)))
-    monkeypatch.setattr(merge.term, "print_done", lambda *a, **k: lines.append("<done>"))
-    monkeypatch.setattr(merge.term, "print_failed", lambda *a, **k: lines.append("<failed>"))
-    monkeypatch.setattr(merge.term, "print_header_box", lambda *a, **k: None)
+    monkeypatch.setattr(merge, "term_print", lambda msg, *a, **k: lines.append(str(msg)))
+    monkeypatch.setattr(merge, "print_done", lambda *a, **k: lines.append("<done>"))
+    monkeypatch.setattr(merge, "print_failed", lambda *a, **k: lines.append("<failed>"))
+    monkeypatch.setattr(merge, "print_header_box", lambda *a, **k: None)
     return lines
 
 
@@ -127,7 +127,7 @@ class FakeUpdate:
 
 
 class FakeNotifier:
-    """Stands in for pyfangs TelegramNotifier.
+    """Stands in for TelegramNotifier.
 
     `updates_batches` is consumed one batch per `get_updates` call; once
     exhausted every further call returns an empty list.
@@ -358,11 +358,9 @@ class FakeYamlHelper:
 
     def get(self, section, key):
         if (section, key) not in self.values:
-            from pyfangs.yaml import YamlError
-
             if section in self.sections:
-                raise YamlError(f"Missing setting: {key!r}")
-            raise YamlError(f"Missing key: {section!r}")
+                raise merge.YamlError(f"Missing setting: {key!r}")
+            raise merge.YamlError(f"Missing key: {section!r}")
         return self.values[(section, key)]
 
 

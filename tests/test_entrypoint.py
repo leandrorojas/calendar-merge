@@ -1,13 +1,13 @@
 """Tests for the `if __name__ == "__main__"` entry-point block.
 
-The block is executed by running the module source with `run_name="__main__"`.
-`merge.term` and the `calendar-merge` logger are process-global, so the
-`quiet_terminal` and `reset_logger` fixtures still intercept the fresh run.
+The block is executed by running the module source with `run_name="__main__"`. The fresh
+module has its own functions, so terminal output is read from stdout rather than from the
+`quiet_terminal` fixture; the `calendar-merge` logger is process-global, so `reset_logger`
+still intercepts the fresh run.
 
-The fresh module re-executes its own imports, so patching `pyfangs.yaml`
-reaches it. That is deliberate: the config load is forced to fail so the run
-never touches iCloud, regardless of whether the developer has a real
-`config.yaml` and `.env` in the repo root.
+The config load is forced to fail so the run never touches iCloud, regardless of whether
+the developer has a real `config.yaml` and `.env` in the repo root. `pathlib.Path` is
+shared with the fresh module, so patching it reaches the fresh `YamlHelper`.
 """
 
 import logging
@@ -25,38 +25,48 @@ def run_entrypoint():
     runpy.run_path(MERGE_SOURCE, run_name="__main__")
 
 
+def printed(capsys) -> list[str]:
+    return capsys.readouterr().out.splitlines()
+
+
 @pytest.fixture(autouse=True)
 def entrypoint_env(tmp_path, monkeypatch):
     """Keep the run hermetic: log to tmp_path, no CLI flags, config load fails."""
     monkeypatch.setenv(merge.ENV_LOG_FILE, str(tmp_path / "entrypoint.log"))
     monkeypatch.setattr("sys.argv", ["calendar-merge"])
 
-    class UnopenableYaml:
-        def __init__(self, path):
-            raise OSError("simulated missing config")
+    real_exists, real_open = Path.exists, Path.open
 
-    # Patch the source module so the freshly executed merge picks this up.
-    monkeypatch.setattr("pyfangs.yaml.YamlHelper", UnopenableYaml)
+    def exists(self, *args, **kwargs):
+        return True if self.name == merge.YAML_FILENAME else real_exists(self, *args, **kwargs)
+
+    def open(self, *args, **kwargs):
+        if self.name == merge.YAML_FILENAME:
+            raise OSError("simulated missing config")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(Path, "open", open)
     return tmp_path
 
 
 class TestEntrypoint:
-    def test_reports_failure_instead_of_crashing(self, quiet_terminal):
+    def test_reports_failure_instead_of_crashing(self, capsys):
         """A failing merge must be reported, not raised out of the process."""
         run_entrypoint()
 
-        assert any("An error occurred during the merge process" in line for line in quiet_terminal)
+        assert any("An error occurred during the merge process" in line for line in printed(capsys))
 
-    def test_surfaces_the_underlying_error_message(self, quiet_terminal):
+    def test_surfaces_the_underlying_error_message(self, capsys):
         run_entrypoint()
 
-        assert any("Unable to open YAML configuration" in line for line in quiet_terminal)
+        assert any("Invalid future event days configuration" in line for line in printed(capsys))
 
-    def test_surfaces_the_chained_cause(self, quiet_terminal):
+    def test_surfaces_the_chained_cause(self, capsys):
         """The wrapper alone says where it stopped, never why."""
         run_entrypoint()
 
-        reported = [line for line in quiet_terminal if "An error occurred" in line]
+        reported = [line for line in printed(capsys) if "An error occurred" in line]
         assert reported, "expected a failure line"
         assert any("simulated missing config" in line for line in reported)
         assert any("OSError" in line for line in reported)
@@ -75,13 +85,13 @@ class TestEntrypoint:
         assert any("calendar-merge started" in message for message in messages)
         assert any("completed in" in message for message in messages)
 
-    def test_attempts_telegram_notification_on_failure(self, quiet_terminal):
+    def test_attempts_telegram_notification_on_failure(self, capsys):
         # Telegram is unconfigured (clean_env), so the notifier reports the
         # missing token instead of raising -- proving the failure path tried
         # to notify the user.
         run_entrypoint()
 
-        assert any("token not configured" in line for line in quiet_terminal)
+        assert any("token not configured" in line for line in printed(capsys))
 
     def test_writes_a_log_file(self, entrypoint_env):
         run_entrypoint()
@@ -90,7 +100,7 @@ class TestEntrypoint:
         assert log_file.exists()
         assert "calendar-merge started" in log_file.read_text()
 
-    def test_never_reaches_icloud(self, monkeypatch, quiet_terminal):
+    def test_never_reaches_icloud(self, monkeypatch, capsys):
         """Config failure must short-circuit before any authentication."""
         attempted = []
         monkeypatch.setattr("pyicloud.PyiCloudService", lambda *a, **k: attempted.append(a))

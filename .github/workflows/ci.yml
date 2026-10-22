@@ -49,15 +49,15 @@ jobs:
           version=$(python tools/pinned_versions.py ruff --check)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # Installed standalone rather than through the project, so this job needs no
-      # private dependency and therefore no deploy key. --no-build installs from
-      # wheels only, so no sdist setup script is ever executed.
+      # Installed standalone rather than through the project, so this job resolves no
+      # project dependencies. --no-build installs from wheels only, so no sdist setup
+      # script is ever executed.
       # Passed through the environment rather than interpolated with ${{ }}, which
       # GitHub substitutes textually before the shell parses the line. uv.lock is a
       # checked-in file a fork pull request can edit, so a crafted version string
       # would otherwise be a command injection. The script also rejects anything not
       # shaped like a version; this is the second of the two guards.
-      - name: Install Ruff only (no private deps needed)
+      - name: Install Ruff only
         env:
           RUFF_VERSION: ${{ steps.ruff.outputs.version }}
         run: uv tool install --no-build "ruff==$RUFF_VERSION"
@@ -78,7 +78,7 @@ jobs:
       # resolves it from the source tree and never from the built artifact -- so full
       # coverage says nothing about whether an installed copy can start. A wheel that
       # shipped the module as src/merge.py went undetected for two releases.
-      # Needs no private dependency: building only runs the hatchling backend.
+      # Needs no project dependencies: building only runs the hatchling backend.
       - name: Wheel layout
         run: |
           uv build --wheel -o dist
@@ -90,11 +90,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up SSH for pyfangs (private dependency)
-        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.PYFANGS_DEPLOY_KEY }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -108,14 +103,6 @@ jobs:
       # re-resolving, so CI tests the exact dependency set that is committed.
       - name: Install dependencies
         run: uv sync --extra dev --locked
-
-      # The deploy key is only needed to fetch pyfangs. Revoke it before running
-      # any PR-authored code (mypy plugins, conftest, tests) so that code cannot
-      # reach the key through SSH_AUTH_SOCK.
-      - name: Revoke SSH agent before running PR code
-        run: |
-          ssh-add -D || true
-          ssh-agent -k || true
 
       # The environment is already synced above, so skip the implicit sync that
       # `uv run` would otherwise perform: --no-sync avoids re-resolving,

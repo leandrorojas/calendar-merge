@@ -98,7 +98,7 @@ class TestCloseNotifier:
 class TestSendTelegramMessageAsync:
     def test_ignores_empty_message(self, telegram_configured, monkeypatch):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         run(merge.send_telegram_message_async(""))
 
@@ -106,7 +106,7 @@ class TestSendTelegramMessageAsync:
 
     def test_returns_quietly_when_unconfigured(self, monkeypatch, quiet_terminal):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         run(merge.send_telegram_message_async("hi"))
 
@@ -114,7 +114,7 @@ class TestSendTelegramMessageAsync:
 
     def test_sends_via_plain_notifier_and_closes(self, telegram_configured, monkeypatch):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         run(merge.send_telegram_message_async("hello"))
 
@@ -125,7 +125,7 @@ class TestSendTelegramMessageAsync:
 
     def test_sends_via_context_manager(self, telegram_configured, monkeypatch):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", async_cm_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", async_cm_factory(notifier))
 
         run(merge.send_telegram_message_async("ctx", disable_notification=True))
 
@@ -139,7 +139,7 @@ class TestSendTelegramMessageAsync:
             raise RuntimeError("network down")
 
         monkeypatch.setattr(notifier, "send_message", boom)
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         with contextlib.suppress(RuntimeError):
             run(merge.send_telegram_message_async("hello"))
@@ -158,7 +158,7 @@ class TestSendTelegramMessage:
 
     def test_runs_coroutine_outside_event_loop(self, telegram_configured, monkeypatch):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         merge.send_telegram_message("sync path")
 
@@ -166,7 +166,7 @@ class TestSendTelegramMessage:
 
     def test_schedules_task_inside_running_loop(self, telegram_configured, monkeypatch):
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         async def driver():
             merge.send_telegram_message("loop path")
@@ -348,7 +348,7 @@ class TestWaitForTelegramReply:
     def test_sends_prompt_then_returns_reply(self, telegram_configured, monkeypatch):
         mark_reply = FakeMessage("999888", date=datetime.now(UTC) + timedelta(seconds=1))
         notifier = FakeNotifier(updates_batches=[[FakeUpdate(1, mark_reply)]])
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         result = run(merge._wait_for_telegram_reply("give me the code"))
 
@@ -365,7 +365,7 @@ class TestWaitForTelegramReply:
             order.append("sent")
 
         monkeypatch.setattr(notifier, "send_message", tracking_send)
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         run(merge._wait_for_telegram_reply("prompt", after_send=lambda: order.append("after_send")))
 
@@ -375,7 +375,7 @@ class TestWaitForTelegramReply:
     def test_works_through_context_manager_factory(self, telegram_configured, monkeypatch):
         reply = FakeMessage("ctx-code", date=datetime.now(UTC) + timedelta(seconds=1))
         notifier = FakeNotifier(updates_batches=[[FakeUpdate(1, reply)]])
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", async_cm_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", async_cm_factory(notifier))
 
         assert run(merge._wait_for_telegram_reply("prompt")) == "ctx-code"
         assert notifier.closed is True
@@ -387,7 +387,7 @@ class TestWaitForTelegramReply:
             raise RuntimeError("poll failed")
 
         monkeypatch.setattr(notifier, "get_updates", boom)
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
 
         with contextlib.suppress(RuntimeError):
             run(merge._wait_for_telegram_reply("prompt"))
@@ -402,7 +402,7 @@ class TestWaitForTelegramReply:
             return None
 
         notifier = FakeNotifier()
-        monkeypatch.setattr(merge.tg, "TelegramNotifier", notifier_factory(notifier))
+        monkeypatch.setattr(merge, "TelegramNotifier", notifier_factory(notifier))
         monkeypatch.setattr(merge, "_poll_telegram_updates", spy)
 
         run(merge._wait_for_telegram_reply("prompt"))

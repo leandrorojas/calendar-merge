@@ -18,7 +18,7 @@ def rotating_handlers():
 
 class TestStripAnsi:
     def test_removes_color_codes(self):
-        colored = merge.term.TerminalColors.red.value + "error" + merge.term.TerminalColors.reset.value
+        colored = merge.TerminalColors.red.value + "error" + merge.TerminalColors.reset.value
         assert merge._strip_ansi(colored) == "error"
 
     def test_leaves_plain_text_untouched(self):
