@@ -165,7 +165,9 @@ class TestFileSystem:
             conn, _ = server.accept()
             conn.recv(4096)
             conn.sendall(b"HTTP/1.0 200 OK\r\n\r\n")
-            while not stop.is_set():
+            # Bounded, so a regression fails after a few seconds instead of hanging the suite.
+            give_up = time.monotonic() + 6
+            while not stop.is_set() and time.monotonic() < give_up:
                 try:
                     conn.sendall(b"x")
                 except OSError:
