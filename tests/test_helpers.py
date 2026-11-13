@@ -110,25 +110,76 @@ class TestYamlHelper:
             self.write(tmp_path, "").get("config", "skip_days")
 
 
+class FakeResponse:
+    """What `urlopen` returns: a context manager whose `read` yields the chunks, then b""."""
+
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
 class TestFileSystem:
-    def test_download_hands_the_url_and_destination_to_urllib(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(merge.urllib.request, "urlretrieve", lambda url, dest: calls.append((url, dest)))
+    def test_download_writes_the_body_to_the_destination(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            merge.urllib.request, "urlopen", lambda url, timeout: FakeResponse([b"BEGIN:", b"VCALENDAR"])
+        )
+        destination = tmp_path / "a.ics"
 
-        merge.FileSystem().download("https://example.test/a.ics", "/tmp/a.ics")
+        merge.FileSystem().download("https://example.test/a.ics", str(destination))
 
-        assert calls == [("https://example.test/a.ics", "/tmp/a.ics")]
+        assert destination.read_bytes() == b"BEGIN:VCALENDAR"
+
+    def test_download_passes_the_timeout_to_urlopen(self, monkeypatch, tmp_path):
+        seen = []
+
+        def fake_urlopen(url, timeout):
+            seen.append((url, timeout))
+            return FakeResponse([])
+
+        monkeypatch.setattr(merge.urllib.request, "urlopen", fake_urlopen)
+
+        merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert seen == [("https://example.test/a.ics", merge.DOWNLOAD_TIMEOUT_SECONDS)]
 
     def test_a_failed_download_names_the_file_and_keeps_the_cause(self, monkeypatch):
-        def boom(url, dest):
+        def boom(url, timeout):
             raise OSError("no route")
 
-        monkeypatch.setattr(merge.urllib.request, "urlretrieve", boom)
+        monkeypatch.setattr(merge.urllib.request, "urlopen", boom)
 
         with pytest.raises(merge.FileSystemError, match=r"Error downloading /tmp/a\.ics: no route") as excinfo:
             merge.FileSystem().download("https://example.test/a.ics", "/tmp/a.ics")
 
         assert isinstance(excinfo.value.__cause__, OSError)
+
+    def test_a_stalled_read_is_a_download_error(self, monkeypatch, tmp_path):
+        class Stalled(FakeResponse):
+            def read(self, size=-1):
+                raise TimeoutError("timed out")
+
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: Stalled([]))
+
+        with pytest.raises(merge.FileSystemError, match="timed out") as excinfo:
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert isinstance(excinfo.value.__cause__, TimeoutError)
+
+    def test_a_feed_that_keeps_trickling_is_cut_off_at_the_deadline(self, monkeypatch, tmp_path):
+        clock = iter([0.0, 1.0, merge.DOWNLOAD_TIMEOUT_SECONDS + 1.0])
+        monkeypatch.setattr(merge, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: FakeResponse([b"a", b"b", b"c"]))
+
+        with pytest.raises(merge.FileSystemError, match="still downloading after 30 seconds"):
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
 
     def test_temp_dir_and_join(self):
         fs = merge.FileSystem()

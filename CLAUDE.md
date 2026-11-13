@@ -301,6 +301,14 @@ overlap — 2FA polling alone may span a whole cron interval — and a torn trun
 absent. That fails open for a failure but fails *closed* for recovery: the "recovered" message
 would simply never arrive.
 
+**A feed download is bounded by `DOWNLOAD_TIMEOUT_SECONDS` (30).** `urlretrieve` has no timeout, so
+from 2026-11-12 an Outlook feed that accepted the connection and then stalled held each run for
+minutes (35 s to 1098 s against a 14 s norm) and the fifteen-minute runs overlapped. The socket
+timeout covers connecting and each read; the deadline in `FileSystem.download` covers a feed that
+keeps trickling bytes, which the socket timeout never trips. A timed-out feed fails like any other
+download error, so the other sources still sync and its already-merged iCloud events stay as they
+were: the download raises before reconcile and sync.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception
