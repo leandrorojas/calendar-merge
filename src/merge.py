@@ -127,7 +127,7 @@ class FileSystem:
         try:
             with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(filename, "wb") as out:
                 received = 0
-                while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+                while chunk := response.read1(DOWNLOAD_CHUNK_BYTES):
                     if monotonic() > deadline:
                         raise TimeoutError(f"still downloading after {DOWNLOAD_TIMEOUT_SECONDS} seconds")
                     out.write(chunk)

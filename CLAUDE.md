@@ -309,7 +309,7 @@ deadline is checked between reads, so a feed that sends one chunk every 29 s run
 long, and DNS resolution is not covered at all.
 
 `urlretrieve` also raised on a body shorter than its `Content-Length`; `read()` just returns EOF,
-so `download` compares the byte count itself. Without it a truncated feed reaches the parser, and
+so `download` compares the byte count itself when the server declares a length. Without it a truncated feed reaches the parser, and
 only the parser's strictness stands between a partial calendar and deleting the missing events
 from iCloud.
 

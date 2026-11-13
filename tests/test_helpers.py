@@ -1,6 +1,9 @@
 """Tests for the terminal, time, YAML, filesystem and Telegram helpers."""
 
 import asyncio
+import socket
+import threading
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -123,7 +126,7 @@ class FakeResponse:
     def __exit__(self, *exc):
         return False
 
-    def read(self, size=-1):
+    def read1(self, size=-1):
         return self.chunks.pop(0) if self.chunks else b""
 
 
@@ -150,6 +153,43 @@ class TestFileSystem:
         merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
 
         assert seen == [("https://example.test/a.ics", merge.DOWNLOAD_TIMEOUT_SECONDS)]
+
+    def test_a_real_trickling_server_is_cut_off_near_the_deadline(self, monkeypatch, tmp_path):
+        """A fake cannot show this: `read(n)` blocks until n bytes arrive, so only a socket can."""
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        stop = threading.Event()
+
+        def serve():
+            conn, _ = server.accept()
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.0 200 OK\r\n\r\n")
+            while not stop.is_set():
+                try:
+                    conn.sendall(b"x")
+                except OSError:
+                    break
+                stop.wait(0.1)
+            conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        monkeypatch.setattr(merge, "DOWNLOAD_TIMEOUT_SECONDS", 1)
+        started = time.monotonic()
+
+        try:
+            with pytest.raises(merge.FileSystemError, match="still downloading"):
+                merge.FileSystem().download(
+                    f"http://127.0.0.1:{server.getsockname()[1]}/a.ics", str(tmp_path / "a.ics")
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+            server.close()
+
+        assert elapsed < 5
 
     def test_a_body_shorter_than_content_length_is_a_download_error(self, monkeypatch, tmp_path):
         response = FakeResponse([b"BEGIN:"], headers={"Content-Length": "5000"})
@@ -179,7 +219,7 @@ class TestFileSystem:
 
     def test_a_stalled_read_is_a_download_error(self, monkeypatch, tmp_path):
         class Stalled(FakeResponse):
-            def read(self, size=-1):
+            def read1(self, size=-1):
                 raise TimeoutError("timed out")
 
         monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: Stalled([]))
