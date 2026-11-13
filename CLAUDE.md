@@ -311,6 +311,22 @@ compared with `Content-Length` because `urlretrieve` did and `read` does not; wi
 feed reaches the parser, and only the parser's strictness stands between a partial calendar and
 deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
+**Every run probes its services first, and `--check` runs only that.** `_run_preflight` checks
+iCloud, Telegram and each feed side by side, so a dead service costs one `PREFLIGHT_TIMEOUT_SECONDS`
+(10) rather than one per service. What each result does to the run is deliberate: iCloud unusable
+raises before any sign-in, a dead feed fails only its own source (the others still sync, and
+the source is not downloaded a second time), Telegram unusable is only logged because it is the
+alert channel and not something the merge needs.
+
+Traps:
+- **Reports never carry the feed URL or the bot token.** The feed URLs are secrets and some
+  exceptions repeat them; a Telegram error can carry a URL holding the token. Details are the
+  HTTP status, the transport's reason or the exception type, never `str(err)`.
+- **pyicloud is not probed.** Its constructor signs in and can start a 2FA prompt, so the
+  iCloud check is `skipped` there. The check is therefore blind on the fallback backend.
+- **`tests/conftest.py` stubs `_run_preflight` for every test.** Without it any test reaching
+  `main()` makes real requests; `tests/test_preflight.py` captures the real function at import.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception

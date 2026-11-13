@@ -266,6 +266,21 @@ To keep your calendars in sync automatically, hook the command into your schedul
 - Both flags can be combined when you run the script twice per day (morning/evening).
 - To validate your Telegram setup, send a test message to the bot and confirm the script can deliver notifications to the configured `TELEGRAM_CHAT_ID`.
 
+## Checking the services
+
+`uv run calendar-merge --check` probes iCloud, Telegram and every feed in `.env`, prints one
+line each and merges nothing. It exits `0` when every service is usable and `1` otherwise, so a
+scheduler or monitor can act on the status.
+
+Each service is `up`, `down` (unreachable, timed out or a server error), `rejected` (it
+answered and refused: a wrong feed URL, credentials or token) or `skipped`. iCloud is skipped
+on the pyicloud backend because probing it would start a 2FA prompt; Telegram is skipped when
+unconfigured. Telegram checks the token, not the chat id.
+
+Every normal run does the same check first. A feed that is not usable fails only its own source,
+and the others still sync. iCloud not usable stops the run before it signs in. Telegram not
+usable is logged and the run carries on.
+
 ## Scheduling
 
 `--first` and `--last` perform a full sync in addition to sending their Telegram message, so
