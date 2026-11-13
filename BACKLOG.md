@@ -62,6 +62,27 @@ the existing rule excludes it. That is the whole remedy until a feed's visibilit
 
 ---
 
+### The download time bound is soft
+
+`DOWNLOAD_TIMEOUT_SECONDS` (30) is a socket timeout per blocking call plus a total deadline
+checked between reads. Three things sit outside it, all found in review of the PR that added it:
+
+- DNS resolution, and a connect that tries several addresses at 30 s each, are not covered.
+- A server trickling *header* bytes resets the timeout on each one and never reaches the
+  deadline check.
+- The deadline is fixed, not configurable. A feed that genuinely needs over 30 s fails on
+  every run, where `urlretrieve` would have finished. Healthy feeds answer in 0.4-1.6 s.
+
+A failed download also leaves its partial `.ics` in the temp directory, as successful runs
+leave theirs: nothing in `src/merge.py` removes either.
+
+**Deliberately deferred.** The incident was a connect that succeeded and then stalled, which the
+socket timeout bounds. Covering the rest needs a watchdog thread or timer that closes the
+response from outside the blocking call, which is more machinery than a 20x margin over the
+slowest healthy feed justifies. Revisit if a feed is ever measured above 10 s.
+
+---
+
 ## Code health
 
 ### `_reconcile_events` exceeds the cognitive-complexity limit

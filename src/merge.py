@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -123,8 +123,18 @@ class FileSystemError(Exception):
 
 class FileSystem:
     def download(self, url: str, filename: str) -> None:
+        deadline = monotonic() + DOWNLOAD_TIMEOUT_SECONDS
         try:
-            urllib.request.urlretrieve(url, filename)
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(filename, "wb") as out:
+                received = 0
+                while chunk := response.read1(DOWNLOAD_CHUNK_BYTES):
+                    if monotonic() > deadline:
+                        raise TimeoutError(f"still downloading after {DOWNLOAD_TIMEOUT_SECONDS} seconds")
+                    out.write(chunk)
+                    received += len(chunk)
+            declared = response.headers.get("Content-Length")
+            if declared is not None and int(declared) != received:
+                raise OSError(f"incomplete body: got {received} of {declared} bytes")
         except Exception as e:
             raise FileSystemError(f"Error downloading {filename}: {e}") from e
 
@@ -257,6 +267,11 @@ ENV_TELEGRAM_TOKEN = "TELEGRAM_BOT_API_TOKEN"
 ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
 ENV_LOG_FILE = "CALENDAR_MERGE_LOG_FILE"
 ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
+
+# Soft bound on a feed download, so a stalled feed cannot hold a run for minutes.
+# See CLAUDE.md for why and for what it does not cover.
+DOWNLOAD_TIMEOUT_SECONDS = 30
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 # Maximum time to wait for a Telegram reply (e.g., 2FA code). Prevents the script
 # from hanging indefinitely when Telegram is flood-controlled or the user is away.

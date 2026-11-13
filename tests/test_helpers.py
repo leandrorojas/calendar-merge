@@ -1,6 +1,9 @@
 """Tests for the terminal, time, YAML, filesystem and Telegram helpers."""
 
 import asyncio
+import socket
+import threading
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -110,25 +113,134 @@ class TestYamlHelper:
             self.write(tmp_path, "").get("config", "skip_days")
 
 
+class FakeResponse:
+    """What `urlopen` returns: a context manager whose `read` yields the chunks, then b""."""
+
+    def __init__(self, chunks, headers=None):
+        self.chunks = list(chunks)
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read1(self, size=-1):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
 class TestFileSystem:
-    def test_download_hands_the_url_and_destination_to_urllib(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(merge.urllib.request, "urlretrieve", lambda url, dest: calls.append((url, dest)))
+    def test_download_writes_the_body_to_the_destination(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            merge.urllib.request, "urlopen", lambda url, timeout: FakeResponse([b"BEGIN:", b"VCALENDAR"])
+        )
+        destination = tmp_path / "a.ics"
 
-        merge.FileSystem().download("https://example.test/a.ics", "/tmp/a.ics")
+        merge.FileSystem().download("https://example.test/a.ics", str(destination))
 
-        assert calls == [("https://example.test/a.ics", "/tmp/a.ics")]
+        assert destination.read_bytes() == b"BEGIN:VCALENDAR"
+
+    def test_download_passes_the_timeout_to_urlopen(self, monkeypatch, tmp_path):
+        seen = []
+
+        def fake_urlopen(url, timeout):
+            seen.append((url, timeout))
+            return FakeResponse([])
+
+        monkeypatch.setattr(merge.urllib.request, "urlopen", fake_urlopen)
+
+        merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert seen == [("https://example.test/a.ics", merge.DOWNLOAD_TIMEOUT_SECONDS)]
+
+    def test_a_real_trickling_server_is_cut_off_near_the_deadline(self, monkeypatch, tmp_path):
+        """A fake cannot show this: `read(n)` blocks until n bytes arrive, so only a socket can."""
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        stop = threading.Event()
+
+        def serve():
+            conn, _ = server.accept()
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.0 200 OK\r\n\r\n")
+            # Bounded, so a regression fails after a few seconds instead of hanging the suite.
+            give_up = time.monotonic() + 6
+            while not stop.is_set() and time.monotonic() < give_up:
+                try:
+                    conn.sendall(b"x")
+                except OSError:
+                    break
+                stop.wait(0.1)
+            conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        monkeypatch.setattr(merge, "DOWNLOAD_TIMEOUT_SECONDS", 1)
+        # A configured proxy would take the request away from the local server.
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+        started = time.monotonic()
+
+        try:
+            with pytest.raises(merge.FileSystemError, match="still downloading"):
+                merge.FileSystem().download(
+                    f"http://127.0.0.1:{server.getsockname()[1]}/a.ics", str(tmp_path / "a.ics")
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+            server.close()
+
+        assert elapsed < 5
+
+    def test_a_body_shorter_than_content_length_is_a_download_error(self, monkeypatch, tmp_path):
+        response = FakeResponse([b"BEGIN:"], headers={"Content-Length": "5000"})
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: response)
+
+        with pytest.raises(merge.FileSystemError, match="got 6 of 5000 bytes"):
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+    def test_a_body_matching_content_length_is_accepted(self, monkeypatch, tmp_path):
+        response = FakeResponse([b"BEGIN:", b"END"], headers={"Content-Length": "9"})
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: response)
+
+        merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert (tmp_path / "a.ics").read_bytes() == b"BEGIN:END"
 
     def test_a_failed_download_names_the_file_and_keeps_the_cause(self, monkeypatch):
-        def boom(url, dest):
+        def boom(url, timeout):
             raise OSError("no route")
 
-        monkeypatch.setattr(merge.urllib.request, "urlretrieve", boom)
+        monkeypatch.setattr(merge.urllib.request, "urlopen", boom)
 
         with pytest.raises(merge.FileSystemError, match=r"Error downloading /tmp/a\.ics: no route") as excinfo:
             merge.FileSystem().download("https://example.test/a.ics", "/tmp/a.ics")
 
         assert isinstance(excinfo.value.__cause__, OSError)
+
+    def test_a_stalled_read_is_a_download_error(self, monkeypatch, tmp_path):
+        class Stalled(FakeResponse):
+            def read1(self, size=-1):
+                raise TimeoutError("timed out")
+
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: Stalled([]))
+
+        with pytest.raises(merge.FileSystemError, match="timed out") as excinfo:
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert isinstance(excinfo.value.__cause__, TimeoutError)
+
+    def test_a_feed_that_keeps_trickling_is_cut_off_at_the_deadline(self, monkeypatch, tmp_path):
+        clock = iter([0.0, 1.0, merge.DOWNLOAD_TIMEOUT_SECONDS + 1.0])
+        monkeypatch.setattr(merge, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: FakeResponse([b"a", b"b", b"c"]))
+
+        with pytest.raises(merge.FileSystemError, match="still downloading after 30 seconds"):
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
 
     def test_temp_dir_and_join(self):
         fs = merge.FileSystem()

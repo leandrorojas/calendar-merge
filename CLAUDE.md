@@ -301,6 +301,16 @@ overlap — 2FA polling alone may span a whole cron interval — and a torn trun
 absent. That fails open for a failure but fails *closed* for recovery: the "recovered" message
 would simply never arrive.
 
+**A feed download has a soft time bound, `DOWNLOAD_TIMEOUT_SECONDS` (30).** `urlretrieve` had no
+timeout, so from 2026-11-12 a stalled Outlook feed held each run for minutes (35 s to 1098 s against
+a 14 s norm, per the homeserver log) and the fifteen-minute runs overlapped.
+
+Read with `read1`, never `read(n)`: `read(n)` blocks until `n` bytes arrive, so a trickling feed
+never reaches the deadline check (a 2 s deadline held a local server for 42 s). The byte count is
+compared with `Content-Length` because `urlretrieve` did and `read` does not; without it a truncated
+feed reaches the parser, and only the parser's strictness stands between a partial calendar and
+deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception
