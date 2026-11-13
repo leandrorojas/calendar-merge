@@ -178,6 +178,9 @@ class TestFileSystem:
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         monkeypatch.setattr(merge, "DOWNLOAD_TIMEOUT_SECONDS", 1)
+        # A configured proxy would take the request away from the local server.
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1")
         started = time.monotonic()
 
         try:

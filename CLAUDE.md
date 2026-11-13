@@ -302,19 +302,14 @@ absent. That fails open for a failure but fails *closed* for recovery: the "reco
 would simply never arrive.
 
 **A feed download has a soft time bound, `DOWNLOAD_TIMEOUT_SECONDS` (30).** `urlretrieve` had no
-timeout, so from 2026-11-12 an Outlook feed that accepted the connection and then stalled held each
-run for minutes (35 s to 1098 s against a 14 s norm, per the homeserver log) and the fifteen-minute
-runs overlapped. The bound is soft: the socket timeout applies to each blocking call and the total
-deadline is checked between reads, so a feed that sends one chunk every 29 s runs about twice as
-long, and DNS resolution is not covered at all.
+timeout, so from 2026-11-12 a stalled Outlook feed held each run for minutes (35 s to 1098 s against
+a 14 s norm, per the homeserver log) and the fifteen-minute runs overlapped.
 
-`urlretrieve` also raised on a body shorter than its `Content-Length`; `read()` just returns EOF,
-so `download` compares the byte count itself when the server declares a length. Without it a truncated feed reaches the parser, and
-only the parser's strictness stands between a partial calendar and deleting the missing events
-from iCloud.
-
-A failed download leaves that source's already-merged iCloud events as they were: it raises before
-reconcile and sync.
+Read with `read1`, never `read(n)`: `read(n)` blocks until `n` bytes arrive, so a trickling feed
+never reaches the deadline check (a 2 s deadline held a local server for 42 s). The byte count is
+compared with `Content-Length` because `urlretrieve` did and `read` does not; without it a truncated
+feed reaches the parser, and only the parser's strictness stands between a partial calendar and
+deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
