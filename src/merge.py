@@ -1,16 +1,20 @@
 # imports
 import argparse
 import asyncio
+import functools
 import json
 import logging
 import os
 import re
+import sys
 import tempfile
+import urllib.error
 import urllib.request
 import uuid
 
 # partial imports
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -23,6 +27,7 @@ from zoneinfo import ZoneInfo
 import click
 import yaml
 from caldav.davclient import DAVClient
+from caldav.lib.error import AuthorizationError
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 from dotenv import load_dotenv
@@ -272,6 +277,15 @@ ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 # See CLAUDE.md for why and for what it does not cover.
 DOWNLOAD_TIMEOUT_SECONDS = 30
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+
+# How long a preflight check waits on one service. Shorter than a download on purpose: a
+# healthy service answers in under two seconds, and the checks run side by side, so a dead
+# one costs the run this much and no more.
+PREFLIGHT_TIMEOUT_SECONDS = 10
+# Client errors that say "try again" rather than "this will never work".
+TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
+ICLOUD_SERVICE_NAME = "iCloud"
+TELEGRAM_SERVICE_NAME = "Telegram"
 
 # Maximum time to wait for a Telegram reply (e.g., 2FA code). Prevents the script
 # from hanging indefinitely when Telegram is flood-controlled or the user is away.
@@ -2209,6 +2223,150 @@ def _summarise_source_failures(failures: list[tuple[str, str]], attempted: int) 
     return f"{header} - {details}"
 
 
+# region PREFLIGHT
+
+
+class ServiceState(Enum):
+    up = "up"
+    # Unreachable, timed out or a server error: the service may come back by itself.
+    down = "down"
+    # Reachable but it refused us -- a wrong URL, credentials or token. Waiting changes nothing.
+    rejected = "rejected"
+    # Not configured, or a backend that cannot be probed without a 2FA prompt.
+    skipped = "skipped"
+
+
+@dataclass(frozen=True)
+class ServiceCheck:
+    name: str
+    state: ServiceState
+    detail: str = ""
+    source_index: int | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.state in (ServiceState.up, ServiceState.skipped)
+
+
+def _feed_failure(index: int, name: str, err: Exception) -> ServiceCheck:
+    """Classify a failed feed request without ever quoting the URL.
+
+    The feed URLs are unauthenticated secrets and some exceptions (a malformed URL, for
+    one) repeat them in their message, so the detail is built from the HTTP status or the
+    transport's own reason and never from `str(err)`.
+    """
+    if isinstance(err, urllib.error.HTTPError):
+        refused = 400 <= err.code < 500 and err.code not in TRANSIENT_HTTP_STATUSES
+        state = ServiceState.rejected if refused else ServiceState.down
+        return ServiceCheck(name, state, f"HTTP {err.code}", index)
+    if isinstance(err, urllib.error.URLError):
+        return ServiceCheck(name, ServiceState.down, _condense(str(err.reason)), index)
+    return ServiceCheck(name, ServiceState.down, type(err).__name__, index)
+
+
+def _check_feed(index: int, url: str) -> ServiceCheck:
+    name = YAML_SECTION_SOURCE_CALENDAR.format(index=index)
+    try:
+        with urllib.request.urlopen(url, timeout=PREFLIGHT_TIMEOUT_SECONDS) as response:
+            response.read1(1)
+    except Exception as err:
+        return _feed_failure(index, name, err)
+    return ServiceCheck(name, ServiceState.up, source_index=index)
+
+
+def _check_icloud() -> ServiceCheck:
+    """Ask iCloud who we are, over CalDAV. Reads only; nothing is written.
+
+    The pyicloud backend is not probed: its constructor signs in, which can start a 2FA
+    prompt, and a check that wakes someone's phone is not a check.
+    """
+    app_password = os.getenv(ENV_ICLOUD_APP_PASSWORD)
+    if not app_password:
+        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.skipped, "pyicloud backend: a check would start 2FA")
+    username = os.getenv(ENV_ICLOUD_USER)
+    if not username:
+        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.rejected, f"{ENV_ICLOUD_USER} is not set")
+    try:
+        DAVClient(
+            url=CALDAV_URL, username=username, password=app_password, timeout=PREFLIGHT_TIMEOUT_SECONDS
+        ).principal()
+    except AuthorizationError:
+        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.rejected, "credentials refused")
+    except Exception as err:
+        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.down, _describe_error(err))
+    return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.up)
+
+
+def _check_telegram() -> ServiceCheck:
+    """Confirm the bot token is accepted (getMe). The chat id is not tested.
+
+    The detail is the exception's type only: a Telegram error can carry the request URL,
+    and that URL contains the token.
+    """
+    token = os.getenv(ENV_TELEGRAM_TOKEN)
+    chat_id = os.getenv(ENV_TELEGRAM_CHAT_ID)
+    if not token or not chat_id:
+        return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.skipped, "not configured")
+
+    async def probe() -> None:
+        async with TelegramNotifier(token, chat_id):
+            pass
+
+    try:
+        asyncio.run(asyncio.wait_for(probe(), PREFLIGHT_TIMEOUT_SECONDS))
+    except InvalidToken:
+        return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.rejected, "token rejected")
+    except Exception as err:
+        return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.down, type(err).__name__)
+    return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.up)
+
+
+def _run_preflight() -> list[ServiceCheck]:
+    """Check iCloud, Telegram and every configured feed at once, in that order."""
+    jobs: list[Callable[[], ServiceCheck]] = [_check_icloud, _check_telegram]
+    for index in range(MAX_SOURCE_CALENDARS + 1):
+        url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=index))
+        if not url:
+            break
+        jobs.append(functools.partial(_check_feed, index, url))
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        return list(pool.map(lambda job: job(), jobs))
+
+
+def _report_preflight(checks: list[ServiceCheck]) -> None:
+    for check in checks:
+        suffix = f" ({check.detail})" if check.detail else ""
+        line = f"preflight {check.name}: {check.state.value}{suffix}"
+        term_print(f"{get_tag(TAG_CALENDAR_MERGE)} {line}")
+        (logger.info if check.usable else logger.warning)(line)
+
+
+def _require_icloud(checks: list[ServiceCheck]) -> None:
+    """Stop before touching anything when iCloud is the one thing that cannot work."""
+    for check in checks:
+        if check.name == ICLOUD_SERVICE_NAME and not check.usable:
+            raise RuntimeError(f"iCloud is unavailable ({check.state.value}): {check.detail}")
+
+
+def _unavailable_feeds(checks: list[ServiceCheck]) -> dict[int, str]:
+    return {
+        check.source_index: f"{check.state.value}: {check.detail}"
+        for check in checks
+        if check.source_index is not None and not check.usable
+    }
+
+
+def _run_check() -> int:
+    """`--check`: report every service and exit non-zero when any is unusable."""
+    load_dotenv()
+    checks = _run_preflight()
+    _report_preflight(checks)
+    return 0 if all(check.usable for check in checks) else 1
+
+
+# endregion
+
+
 def _process_source_calendar(
     yaml_helper: ConfigReader,
     source_index: int,
@@ -2220,6 +2378,7 @@ def _process_source_calendar(
     icloud_events: list[MergeEvent],
     calendar_service,
     calendar_guid: str,
+    unavailable_feeds: Mapping[int, str] | None = None,
 ) -> None:
     """Download, parse, reconcile, and sync a single source calendar.
 
@@ -2249,6 +2408,11 @@ def _process_source_calendar(
         print_failed()
         raise RuntimeError(f"Missing calendar URL for index {source_index}")
     print_done()
+
+    if unavailable_feeds and source_index in unavailable_feeds:
+        raise RuntimeError(
+            f"Calendar {calendar_source} [{source_index}] is unavailable: {unavailable_feeds[source_index]}"
+        )
 
     print_step(TAG_CALENDAR_MERGE, f"downloading calendar {calendar_source} [{source_index}]...", one_liner=False)
     timestamp_filename = fs.join_paths(fs.get_temp_dir(), f"{convert_to_utc(now).strftime('%Y%m%d%H%M%S%f')}.ics")
@@ -2325,6 +2489,7 @@ def _process_all_source_calendars(
     icloud_events: list[MergeEvent],
     calendar_service,
     calendar_guid: str,
+    unavailable_feeds: Mapping[int, str] | None = None,
 ) -> tuple[list[tuple[str, str]], int]:
     """Process every configured source calendar.
 
@@ -2359,6 +2524,7 @@ def _process_all_source_calendars(
                 icloud_events,
                 calendar_service,
                 calendar_guid,
+                unavailable_feeds=unavailable_feeds,
             )
         except YamlError as err:
             outcome = _classify_source_config_error(err)
@@ -2428,16 +2594,29 @@ def _run_and_report() -> None:
         _report_recovery()
 
 
-def main():
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Calendar merge with Telegram notifications.")
     parser.add_argument("--first", action="store_true", help="Send start-of-day Telegram notification.")
     parser.add_argument("--last", action="store_true", help="Send end-of-day Telegram notification.")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check iCloud, Telegram and every feed, then exit non-zero if any is unusable. Merges nothing.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = _parse_args()
 
     yaml_helper, future_event_days, skip_days, fs, destination = _load_config()
 
     if args.first:
         send_telegram_message("☀️ calendar-merge started for today.")
+
+    checks = _run_preflight()
+    _report_preflight(checks)
+    _require_icloud(checks)
 
     icloud_service = _authenticate_backend()
     calendar_service, calendar_guid, icloud_events, today_bod, cut_off_date, now = _load_icloud_events(
@@ -2462,6 +2641,7 @@ def main():
         icloud_events,
         calendar_service,
         calendar_guid,
+        unavailable_feeds=_unavailable_feeds(checks),
     )
 
     if failures:
@@ -2483,6 +2663,8 @@ def cli() -> None:
     Telegram alert at all.
     """
     _configure_logging()
+    if _parse_args().check:
+        sys.exit(_run_check())
     logger.info("calendar-merge started")
 
     merge_start = perf_counter()

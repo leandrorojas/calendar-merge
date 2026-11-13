@@ -21,6 +21,7 @@ ENV_VARS = (
     merge.ENV_STATE_FILE,
     merge.ENV_ICLOUD_USER,
     merge.ENV_ICLOUD_PASS,
+    merge.ENV_ICLOUD_APP_PASSWORD,
     merge.ENV_TELEGRAM_TOKEN,
     merge.ENV_TELEGRAM_CHAT_ID,
     merge.ENV_LOG_FILE,
@@ -51,6 +52,17 @@ def clean_env(monkeypatch, block_dotenv):
     """Drop every env var merge.py reads, so tests never inherit a real .env."""
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_live_preflight(monkeypatch):
+    """Keep `main()` off the network.
+
+    The preflight probes iCloud, Telegram and every feed, so a test that reaches it would
+    make real requests. Stubbed to report nothing; the tests of the preflight itself
+    call its pieces directly or replace this.
+    """
+    monkeypatch.setattr(merge, "_run_preflight", lambda: [])
 
 
 @pytest.fixture(autouse=True)
