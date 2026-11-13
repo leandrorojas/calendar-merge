@@ -126,10 +126,15 @@ class FileSystem:
         deadline = monotonic() + DOWNLOAD_TIMEOUT_SECONDS
         try:
             with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(filename, "wb") as out:
+                received = 0
                 while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
                     if monotonic() > deadline:
                         raise TimeoutError(f"still downloading after {DOWNLOAD_TIMEOUT_SECONDS} seconds")
                     out.write(chunk)
+                    received += len(chunk)
+            declared = response.headers.get("Content-Length")
+            if declared is not None and int(declared) != received:
+                raise OSError(f"incomplete body: got {received} of {declared} bytes")
         except Exception as e:
             raise FileSystemError(f"Error downloading {filename}: {e}") from e
 
@@ -263,11 +268,8 @@ ENV_TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID"
 ENV_LOG_FILE = "CALENDAR_MERGE_LOG_FILE"
 ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 
-# `urlretrieve` has no timeout, so a feed that accepts the connection and then stalls
-# held every run for minutes -- Outlook did from 2026-11-12 -- and with a run every
-# fifteen minutes they overlapped. The socket timeout bounds connecting and each read;
-# the deadline in `FileSystem.download` bounds a feed that keeps trickling bytes, which
-# the socket timeout alone never trips. Healthy feeds answer in under two seconds.
+# Soft bound on a feed download, so a stalled feed cannot hold a run for minutes.
+# See CLAUDE.md for why and for what it does not cover.
 DOWNLOAD_TIMEOUT_SECONDS = 30
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 

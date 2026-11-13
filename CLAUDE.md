@@ -301,13 +301,20 @@ overlap — 2FA polling alone may span a whole cron interval — and a torn trun
 absent. That fails open for a failure but fails *closed* for recovery: the "recovered" message
 would simply never arrive.
 
-**A feed download is bounded by `DOWNLOAD_TIMEOUT_SECONDS` (30).** `urlretrieve` has no timeout, so
-from 2026-11-12 an Outlook feed that accepted the connection and then stalled held each run for
-minutes (35 s to 1098 s against a 14 s norm) and the fifteen-minute runs overlapped. The socket
-timeout covers connecting and each read; the deadline in `FileSystem.download` covers a feed that
-keeps trickling bytes, which the socket timeout never trips. A timed-out feed fails like any other
-download error, so the other sources still sync and its already-merged iCloud events stay as they
-were: the download raises before reconcile and sync.
+**A feed download has a soft time bound, `DOWNLOAD_TIMEOUT_SECONDS` (30).** `urlretrieve` had no
+timeout, so from 2026-11-12 an Outlook feed that accepted the connection and then stalled held each
+run for minutes (35 s to 1098 s against a 14 s norm, per the homeserver log) and the fifteen-minute
+runs overlapped. The bound is soft: the socket timeout applies to each blocking call and the total
+deadline is checked between reads, so a feed that sends one chunk every 29 s runs about twice as
+long, and DNS resolution is not covered at all.
+
+`urlretrieve` also raised on a body shorter than its `Content-Length`; `read()` just returns EOF,
+so `download` compares the byte count itself. Without it a truncated feed reaches the parser, and
+only the parser's strictness stands between a partial calendar and deleting the missing events
+from iCloud.
+
+A failed download leaves that source's already-merged iCloud events as they were: it raises before
+reconcile and sync.
 
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list

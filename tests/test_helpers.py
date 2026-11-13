@@ -113,8 +113,9 @@ class TestYamlHelper:
 class FakeResponse:
     """What `urlopen` returns: a context manager whose `read` yields the chunks, then b""."""
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, headers=None):
         self.chunks = list(chunks)
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -149,6 +150,21 @@ class TestFileSystem:
         merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
 
         assert seen == [("https://example.test/a.ics", merge.DOWNLOAD_TIMEOUT_SECONDS)]
+
+    def test_a_body_shorter_than_content_length_is_a_download_error(self, monkeypatch, tmp_path):
+        response = FakeResponse([b"BEGIN:"], headers={"Content-Length": "5000"})
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: response)
+
+        with pytest.raises(merge.FileSystemError, match="got 6 of 5000 bytes"):
+            merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+    def test_a_body_matching_content_length_is_accepted(self, monkeypatch, tmp_path):
+        response = FakeResponse([b"BEGIN:", b"END"], headers={"Content-Length": "9"})
+        monkeypatch.setattr(merge.urllib.request, "urlopen", lambda url, timeout: response)
+
+        merge.FileSystem().download("https://example.test/a.ics", str(tmp_path / "a.ics"))
+
+        assert (tmp_path / "a.ics").read_bytes() == b"BEGIN:END"
 
     def test_a_failed_download_names_the_file_and_keeps_the_cause(self, monkeypatch):
         def boom(url, timeout):
