@@ -278,12 +278,12 @@ ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 DOWNLOAD_TIMEOUT_SECONDS = 30
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
-# How long a preflight check waits on one service. Shorter than a download on purpose: a
-# healthy service answers in under two seconds, and the checks run side by side, so a dead
-# one costs the run this much and no more.
-PREFLIGHT_TIMEOUT_SECONDS = 10
+# A probe that gives up sooner than the real call would turns a slow service into a dead
+# one, and a dead one skips its source. So the probe waits exactly as long as the download.
+PREFLIGHT_TIMEOUT_SECONDS = DOWNLOAD_TIMEOUT_SECONDS
 # Client errors that say "try again" rather than "this will never work".
 TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
+FEED_TIMED_OUT = "timed out"
 ICLOUD_SERVICE_NAME = "iCloud"
 TELEGRAM_SERVICE_NAME = "Telegram"
 
@@ -2259,6 +2259,12 @@ def _feed_failure(index: int, name: str, err: Exception) -> ServiceCheck:
         refused = 400 <= err.code < 500 and err.code not in TRANSIENT_HTTP_STATUSES
         state = ServiceState.rejected if refused else ServiceState.down
         return ServiceCheck(name, state, f"HTTP {err.code}", index)
+    cause = err.reason if isinstance(err, urllib.error.URLError) else err
+    if isinstance(cause, TimeoutError):
+        # One spelling for every way a timeout can surface. The failure alert compares causes
+        # as text, so a stalled feed reporting "timed out" on one run and "TimeoutError" on
+        # the next would alert every time.
+        return ServiceCheck(name, ServiceState.down, FEED_TIMED_OUT, index)
     if isinstance(err, urllib.error.URLError):
         return ServiceCheck(name, ServiceState.down, _condense(str(err.reason)), index)
     return ServiceCheck(name, ServiceState.down, type(err).__name__, index)
@@ -2287,9 +2293,10 @@ def _check_icloud() -> ServiceCheck:
     if not username:
         return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.rejected, f"{ENV_ICLOUD_USER} is not set")
     try:
-        DAVClient(
+        with DAVClient(
             url=CALDAV_URL, username=username, password=app_password, timeout=PREFLIGHT_TIMEOUT_SECONDS
-        ).principal()
+        ) as client:
+            client.principal()
     except AuthorizationError:
         return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.rejected, "credentials refused")
     except Exception as err:
@@ -2322,7 +2329,6 @@ def _check_telegram() -> ServiceCheck:
 
 
 def _run_preflight() -> list[ServiceCheck]:
-    """Check iCloud, Telegram and every configured feed at once, in that order."""
     jobs: list[Callable[[], ServiceCheck]] = [_check_icloud, _check_telegram]
     for index in range(MAX_SOURCE_CALENDARS + 1):
         url = os.getenv(ENV_VAR_CALENDAR_URL.format(index=index))
@@ -2357,7 +2363,6 @@ def _unavailable_feeds(checks: list[ServiceCheck]) -> dict[int, str]:
 
 
 def _run_check() -> int:
-    """`--check`: report every service and exit non-zero when any is unusable."""
     load_dotenv()
     checks = _run_preflight()
     _report_preflight(checks)

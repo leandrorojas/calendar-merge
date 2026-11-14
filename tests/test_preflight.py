@@ -87,11 +87,21 @@ class TestFeedCheck:
         assert "Connection reset by peer" in check.detail
 
     def test_a_timeout_is_down(self, monkeypatch):
-        monkeypatch.setattr(merge.urllib.request, "urlopen", feed_opener(TimeoutError("timed out")))
+        monkeypatch.setattr(merge.urllib.request, "urlopen", feed_opener(TimeoutError("read timed out")))
 
         check = merge._check_feed(1, SECRET_URL)
 
-        assert (check.state, check.detail) == (ServiceState.down, "TimeoutError")
+        assert (check.state, check.detail) == (ServiceState.down, "timed out")
+
+    def test_every_way_a_timeout_surfaces_reads_the_same(self, monkeypatch):
+        """A stall can fail at connect (URLError) or mid-read (TimeoutError). Different
+        text would make the failure alert fire again on each run."""
+        details = set()
+        for error in (TimeoutError("x"), urllib.error.URLError(TimeoutError("timed out"))):
+            monkeypatch.setattr(merge.urllib.request, "urlopen", feed_opener(error))
+            details.add(merge._check_feed(1, SECRET_URL).detail)
+
+        assert details == {"timed out"}
 
     def test_the_feed_url_never_reaches_the_report(self, monkeypatch):
         """The URLs are secrets, and a malformed one is repeated in its own exception."""
@@ -108,9 +118,18 @@ class FakeDav:
     error: ClassVar[BaseException | None] = None
     instances: ClassVar[list] = []
 
+    closed = False
+
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         FakeDav.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+        return False
 
     def principal(self):
         if FakeDav.error:
@@ -148,6 +167,16 @@ class TestICloudCheck:
 
         assert check.state is ServiceState.up
         assert fake_dav.instances[0].kwargs["timeout"] == merge.PREFLIGHT_TIMEOUT_SECONDS
+        assert fake_dav.instances[0].closed
+
+    def test_the_client_is_closed_when_the_probe_fails(self, monkeypatch, fake_dav):
+        monkeypatch.setenv(merge.ENV_ICLOUD_APP_PASSWORD, "pw")
+        monkeypatch.setenv(merge.ENV_ICLOUD_USER, "me@example.test")
+        fake_dav.error = ConnectionError("down")
+
+        merge._check_icloud()
+
+        assert fake_dav.instances[0].closed
 
     def test_refused_credentials_are_rejected(self, monkeypatch, fake_dav):
         monkeypatch.setenv(merge.ENV_ICLOUD_APP_PASSWORD, "pw")
