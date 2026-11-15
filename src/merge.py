@@ -272,6 +272,9 @@ ENV_LOG_LEVEL = "CALENDAR_MERGE_LOG_LEVEL"
 # See CLAUDE.md for why and for what it does not cover.
 DOWNLOAD_TIMEOUT_SECONDS = 30
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# `DAVClient` has no timeout unless given one, so a stalled iCloud held a run exactly as the
+# feed did. It applies to each request, not to the run as a whole.
+CALDAV_TIMEOUT_SECONDS = DOWNLOAD_TIMEOUT_SECONDS
 
 # Maximum time to wait for a Telegram reply (e.g., 2FA code). Prevents the script
 # from hanging indefinitely when Telegram is flood-controlled or the user is away.
@@ -2014,7 +2017,7 @@ def _authenticate_caldav(username: str, app_password: str) -> CalDavService:
     """
     print_step(TAG_ICLOUD_AUTH, "authenticating with iCloud over CalDAV...", one_liner=False)
     try:
-        client = DAVClient(url=CALDAV_URL, username=username, password=app_password)
+        client = DAVClient(url=CALDAV_URL, username=username, password=app_password, timeout=CALDAV_TIMEOUT_SECONDS)
         service = CalDavService(CalDavCalendarService(client))
     except Exception as err:
         print_failed()
