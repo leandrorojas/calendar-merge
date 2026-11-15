@@ -311,6 +311,24 @@ compared with `Content-Length` because `urlretrieve` did and `read` does not; wi
 feed reaches the parser, and only the parser's strictness stands between a partial calendar and
 deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
+**Every run probes its services first, and `--check` runs only that.** The goal is to name a dead
+service in one line instead of a chained download error, and to stop a run that cannot work.
+Telegram unusable does not stop the merge, because it is only the alert channel. The probe waits
+as long as the download does on purpose: one that gave up sooner would turn a slow feed into a dead
+one and skip its source. Its bound is soft, like the download's (see `BACKLOG.md`).
+
+Traps:
+- **A timeout reads "timed out" however it surfaces.** The failure alert compares causes as text,
+  and a stall fails at connect or mid-read depending on the run. `_is_timeout` matches by class
+  name because niquests, which CalDAV uses, is not a declared dependency.
+- **Reports never carry the feed URL or the bot token.** The feed URLs are secrets and some
+  exceptions repeat them; a Telegram error can carry a URL holding the token. Details are the
+  HTTP status, the transport's reason or the exception type, never `str(err)`.
+- **pyicloud is not probed.** Its constructor signs in and can start a 2FA prompt, so the
+  iCloud check is `skipped` there and blind on the fallback backend.
+- **`tests/conftest.py` stubs `_run_preflight` for every test.** Without it any test reaching
+  `main()` makes real requests; `tests/test_preflight.py` captures the real function at import.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception

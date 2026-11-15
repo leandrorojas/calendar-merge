@@ -1242,7 +1242,7 @@ class TestMain:
         skip_seen: list[list[str]] = []
         FlowSpy(source_count=1).install(monkeypatch, tmp_path)
 
-        def capture(yaml_helper, index, fs, now, skip_days, today_bod, cut_off, *args):
+        def capture(yaml_helper, index, fs, now, skip_days, today_bod, cut_off, *args, **kwargs):
             if index > 0:
                 raise YamlError("Missing key: 'source-calendar-1'")
             captured.update(today_bod=today_bod, cut_off=cut_off)
