@@ -311,13 +311,11 @@ compared with `Content-Length` because `urlretrieve` did and `read` does not; wi
 feed reaches the parser, and only the parser's strictness stands between a partial calendar and
 deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
-**Every run probes its services first, and `--check` runs only that.** `_run_preflight` checks
-iCloud, Telegram and each feed side by side, so a dead service costs about one `PREFLIGHT_TIMEOUT_SECONDS`
-rather than one per service. The bound is soft, as the download's is: see `BACKLOG.md`. That equals the download's own timeout on purpose: a probe that gave
-up sooner would turn a slow feed into a dead one and skip its source. What each result does to the run is deliberate: iCloud unusable
-raises before any sign-in, a dead feed fails only its own source (the others still sync, and
-the source is not downloaded a second time), Telegram unusable is only logged because it is the
-alert channel and not something the merge needs.
+**Every run probes its services first, and `--check` runs only that.** The goal is to name a dead
+service in one line instead of a chained download error, and to stop a run that cannot work.
+Telegram unusable does not stop the merge, because it is only the alert channel. The probe waits
+as long as the download does on purpose: one that gave up sooner would turn a slow feed into a dead
+one and skip its source. Its bound is soft, like the download's (see `BACKLOG.md`).
 
 Traps:
 - **A timeout reads "timed out" however it surfaces.** The failure alert compares causes as text,
@@ -327,7 +325,7 @@ Traps:
   exceptions repeat them; a Telegram error can carry a URL holding the token. Details are the
   HTTP status, the transport's reason or the exception type, never `str(err)`.
 - **pyicloud is not probed.** Its constructor signs in and can start a 2FA prompt, so the
-  iCloud check is `skipped` there. The check is therefore blind on the fallback backend.
+  iCloud check is `skipped` there and blind on the fallback backend.
 - **`tests/conftest.py` stubs `_run_preflight` for every test.** Without it any test reaching
   `main()` makes real requests; `tests/test_preflight.py` captures the real function at import.
 
