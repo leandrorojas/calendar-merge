@@ -8,6 +8,9 @@ CalDAV behaviour -- a field renamed here is a silent no-op sync everywhere else.
 """
 
 import re
+import socket
+import threading
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -496,7 +499,45 @@ class TestAuthenticateCalDav:
         monkeypatch.setattr(merge, "DAVClient", client)
         merge._authenticate_caldav("someone@example.com", "abcd-efgh")
 
-        assert seen == {"url": merge.CALDAV_URL, "username": "someone@example.com", "password": "abcd-efgh"}
+        assert seen == {
+            "url": merge.CALDAV_URL,
+            "username": "someone@example.com",
+            "password": "abcd-efgh",
+            "timeout": merge.CALDAV_TIMEOUT_SECONDS,
+        }
+
+    def test_a_stalled_server_fails_the_run_instead_of_hanging_it(self, monkeypatch, quiet_terminal):
+        """Against a real socket: a fake client cannot show that the timeout is honoured."""
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        stop = threading.Event()
+
+        def serve():
+            conn, _ = server.accept()
+            conn.recv(4096)
+            stop.wait(6)  # bounded, so a regression fails after a few seconds instead of hanging
+            conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        monkeypatch.setattr(merge, "CALDAV_URL", f"http://127.0.0.1:{server.getsockname()[1]}/")
+        monkeypatch.setattr(merge, "CALDAV_TIMEOUT_SECONDS", 1)
+        # A configured proxy would take the request away from the local server.
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+        started = time.monotonic()
+
+        try:
+            with pytest.raises(RuntimeError, match="Unable to start iCloud CalDAV service"):
+                merge._authenticate_caldav("someone@example.com", "abcd-efgh")
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+            server.close()
+
+        assert elapsed < 5
 
     def test_a_rejected_password_is_wrapped_with_its_cause(self, monkeypatch, quiet_terminal):
         """The alert must say the CalDAV session failed and why, not just that something did."""

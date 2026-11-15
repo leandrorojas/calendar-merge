@@ -70,6 +70,8 @@ checked between reads. Three things sit outside it, all found in review of the P
 - DNS resolution, and a connect that tries several addresses at 30 s each, are not covered.
 - A server trickling *header* bytes resets the timeout on each one and never reaches the
   deadline check.
+- The CalDAV client's timeout (`CALDAV_TIMEOUT_SECONDS`) applies to each request, so a run
+  making many requests against a slow iCloud can take far longer than one timeout.
 - The deadline is fixed, not configurable. A feed that genuinely needs over 30 s fails on
   every run, where `urlretrieve` would have finished. Healthy feeds answer in 0.4-1.6 s.
 

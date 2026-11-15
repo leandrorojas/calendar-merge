@@ -311,6 +311,10 @@ compared with `Content-Length` because `urlretrieve` did and `read` does not; wi
 feed reaches the parser, and only the parser's strictness stands between a partial calendar and
 deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
+The CalDAV client is bounded the same way (`CALDAV_TIMEOUT_SECONDS`): `DAVClient` waits forever
+unless given a `timeout`, so a stalled iCloud would hold a run as the Outlook feed did. It applies
+to each request, not to the run, so it is soft in the same sense.
+
 **One source calendar's failure does not cost the calendars after it.** `_process_all_source_calendars`
 catches `YamlError` as its *termination signal* — a missing section is how it learns the list
 has ended, which is why that handler must stay ahead of the one below it. Every other exception
