@@ -83,6 +83,27 @@ slowest healthy feed justifies. Revisit if a feed is ever measured above 10 s.
 
 ---
 
+### The preflight is soft-bounded, and blind in places
+
+Found in review of the PR that added it. None of these is a regression.
+
+- **No wall-clock deadline.** The probes use per-socket timeouts only, and the run waits for
+  every probe. A host trickling response headers, or iCloud's `principal()` making several
+  requests (a 401 negotiate and retry, then the PROPFIND), can take longer than one timeout.
+- **Blind on the pyicloud backend.** Its constructor signs in and can start a 2FA prompt, so
+  the iCloud check is `skipped` there.
+- **The probe can be stale or wrong.** A feed that fails the probe is skipped without a real
+  download, and one that passes can still fail the download. Under CalDAV the gap is seconds;
+  on the pyicloud path a 2FA wait of up to five minutes sits between them.
+- **Every feed is requested twice per run.**
+
+**Deliberately deferred.** The incident was a stall after connect, which the socket timeout
+bounds. A hard deadline needs daemon worker threads that are abandoned on expiry, since a
+`ThreadPoolExecutor` blocks on exit. The two requests per feed were chosen so a dead feed is
+named in one line and not re-downloaded. Revisit if a probe is ever seen to hang a run.
+
+---
+
 ## Code health
 
 ### `_reconcile_events` exceeds the cognitive-complexity limit

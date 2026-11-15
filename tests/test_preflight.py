@@ -7,7 +7,7 @@ from typing import ClassVar
 
 import pytest
 from caldav.lib.error import AuthorizationError
-from telegram.error import InvalidToken, NetworkError
+from telegram.error import InvalidToken, NetworkError, TimedOut
 
 import merge
 from merge import ServiceCheck, ServiceState
@@ -197,6 +197,17 @@ class TestICloudCheck:
         assert check.state is ServiceState.down
         assert "no route to host" in check.detail
 
+    def test_a_connect_and_a_read_timeout_read_the_same(self, monkeypatch, fake_dav):
+        """Different text per run would make the failure alert fire again every time."""
+        monkeypatch.setenv(merge.ENV_ICLOUD_APP_PASSWORD, "pw")
+        monkeypatch.setenv(merge.ENV_ICLOUD_USER, "me@example.test")
+        details = set()
+        for error in (ReadTimeout("Read timed out."), ConnectTimeout("Connection timed out.")):
+            fake_dav.error = error
+            details.add(merge._check_icloud().detail)
+
+        assert details == {"timed out"}
+
     def test_the_password_never_reaches_the_report(self, monkeypatch, fake_dav):
         monkeypatch.setenv(merge.ENV_ICLOUD_APP_PASSWORD, "hunter2-app-password")
         monkeypatch.setenv(merge.ENV_ICLOUD_USER, "me@example.test")
@@ -235,6 +246,28 @@ def fake_notifier(monkeypatch):
     return FakeProbeNotifier
 
 
+class Timeout(OSError):
+    """Stands in for niquests' `Timeout`, which is not a declared dependency."""
+
+
+class ReadTimeout(Timeout):
+    pass
+
+
+class ConnectTimeout(Timeout):
+    pass
+
+
+class TestIsTimeout:
+    @pytest.mark.parametrize("error", [TimeoutError(), ReadTimeout(), ConnectTimeout(), TimedOut("Timed out")])
+    def test_every_transports_timeout_is_recognised(self, error):
+        assert merge._is_timeout(error)
+
+    @pytest.mark.parametrize("error", [ConnectionError(), ValueError(), NetworkError("x"), "timed out"])
+    def test_other_failures_are_not(self, error):
+        assert not merge._is_timeout(error)
+
+
 class TestTelegramCheck:
     def test_unconfigured_is_skipped(self, monkeypatch):
         assert merge._check_telegram().state is ServiceState.skipped
@@ -262,13 +295,18 @@ class TestTelegramCheck:
         assert (check.state, check.detail) == (ServiceState.down, "NetworkError")
         assert "SECRET-BOT-TOKEN" not in repr(check)
 
+    def test_telegrams_own_timeout_reads_the_same(self, fake_notifier):
+        fake_notifier.error = TimedOut("Timed out")
+
+        assert merge._check_telegram().detail == "timed out"
+
     def test_a_hang_is_cut_off(self, monkeypatch, fake_notifier):
         fake_notifier.hang = True
         monkeypatch.setattr(merge, "PREFLIGHT_TIMEOUT_SECONDS", 0.05)
 
         check = merge._check_telegram()
 
-        assert (check.state, check.detail) == (ServiceState.down, "TimeoutError")
+        assert (check.state, check.detail) == (ServiceState.down, "timed out")
 
 
 class TestRunPreflight:

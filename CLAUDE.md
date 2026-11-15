@@ -312,8 +312,8 @@ feed reaches the parser, and only the parser's strictness stands between a parti
 deleting the missing events from iCloud. What the bound leaves open is in `BACKLOG.md`.
 
 **Every run probes its services first, and `--check` runs only that.** `_run_preflight` checks
-iCloud, Telegram and each feed side by side, so a dead service costs one `PREFLIGHT_TIMEOUT_SECONDS`
-rather than one per service. That equals the download's own timeout on purpose: a probe that gave
+iCloud, Telegram and each feed side by side, so a dead service costs about one `PREFLIGHT_TIMEOUT_SECONDS`
+rather than one per service. The bound is soft, as the download's is: see `BACKLOG.md`. That equals the download's own timeout on purpose: a probe that gave
 up sooner would turn a slow feed into a dead one and skip its source. What each result does to the run is deliberate: iCloud unusable
 raises before any sign-in, a dead feed fails only its own source (the others still sync, and
 the source is not downloaded a second time), Telegram unusable is only logged because it is the
@@ -321,7 +321,8 @@ alert channel and not something the merge needs.
 
 Traps:
 - **A timeout reads "timed out" however it surfaces.** The failure alert compares causes as text,
-  and a stall fails at connect or mid-read depending on the run.
+  and a stall fails at connect or mid-read depending on the run. `_is_timeout` matches by class
+  name because niquests, which CalDAV uses, is not a declared dependency.
 - **Reports never carry the feed URL or the bot token.** The feed URLs are secrets and some
   exceptions repeat them; a Telegram error can carry a URL holding the token. Details are the
   HTTP status, the transport's reason or the exception type, never `str(err)`.

@@ -283,7 +283,10 @@ DOWNLOAD_CHUNK_BYTES = 64 * 1024
 PREFLIGHT_TIMEOUT_SECONDS = DOWNLOAD_TIMEOUT_SECONDS
 # Client errors that say "try again" rather than "this will never work".
 TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
-FEED_TIMED_OUT = "timed out"
+TIMED_OUT = "timed out"
+# Every transport names its own timeout: the builtin, urllib's socket timeout, niquests'
+# ReadTimeout and ConnectTimeout (both subclasses of `Timeout`) and Telegram's `TimedOut`.
+TIMEOUT_CLASS_NAMES = frozenset({"TimeoutError", "Timeout", "TimedOut"})
 ICLOUD_SERVICE_NAME = "iCloud"
 TELEGRAM_SERVICE_NAME = "Telegram"
 
@@ -2248,6 +2251,12 @@ class ServiceCheck:
         return self.state in (ServiceState.up, ServiceState.skipped)
 
 
+def _is_timeout(err: object) -> bool:
+    """Matched by class name rather than by isinstance because the HTTP client under CalDAV,
+    niquests, is not a declared dependency and its timeouts are not the builtin one."""
+    return any(klass.__name__ in TIMEOUT_CLASS_NAMES for klass in type(err).__mro__)
+
+
 def _feed_failure(index: int, name: str, err: Exception) -> ServiceCheck:
     """Classify a failed feed request without ever quoting the URL.
 
@@ -2260,11 +2269,11 @@ def _feed_failure(index: int, name: str, err: Exception) -> ServiceCheck:
         state = ServiceState.rejected if refused else ServiceState.down
         return ServiceCheck(name, state, f"HTTP {err.code}", index)
     cause = err.reason if isinstance(err, urllib.error.URLError) else err
-    if isinstance(cause, TimeoutError):
+    if _is_timeout(cause):
         # One spelling for every way a timeout can surface. The failure alert compares causes
-        # as text, so a stalled feed reporting "timed out" on one run and "TimeoutError" on
+        # as text, so a stalled service reporting "timed out" on one run and "TimeoutError" on
         # the next would alert every time.
-        return ServiceCheck(name, ServiceState.down, FEED_TIMED_OUT, index)
+        return ServiceCheck(name, ServiceState.down, TIMED_OUT, index)
     if isinstance(err, urllib.error.URLError):
         return ServiceCheck(name, ServiceState.down, _condense(str(err.reason)), index)
     return ServiceCheck(name, ServiceState.down, type(err).__name__, index)
@@ -2300,7 +2309,8 @@ def _check_icloud() -> ServiceCheck:
     except AuthorizationError:
         return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.rejected, "credentials refused")
     except Exception as err:
-        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.down, _describe_error(err))
+        detail = TIMED_OUT if _is_timeout(err) else _describe_error(err)
+        return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.down, detail)
     return ServiceCheck(ICLOUD_SERVICE_NAME, ServiceState.up)
 
 
@@ -2324,7 +2334,8 @@ def _check_telegram() -> ServiceCheck:
     except InvalidToken:
         return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.rejected, "token rejected")
     except Exception as err:
-        return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.down, type(err).__name__)
+        detail = TIMED_OUT if _is_timeout(err) else type(err).__name__
+        return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.down, detail)
     return ServiceCheck(TELEGRAM_SERVICE_NAME, ServiceState.up)
 
 
